@@ -2,24 +2,17 @@
 
 Reads the captions of YouTube streams, has Gemini find the segments you care about, and saves a timestamp list for each stream.
 
+This is an independent project and isn't affiliated with or endorsed by YouTube or Google. It uses the open-source yt-dlp library.
+
 ## Download and install (Windows)
 
 1. Open this project's **Releases** page (link on the right side of the GitHub page) and download `StreamTimestamper-vX.Y.Z-windows.zip`. Only download it from there.
-2. Optional check: in PowerShell run `Get-FileHash .\StreamTimestamper-vX.Y.Z-windows.zip` and compare the result with the text in the `.sha256` file on the same release page. They must match.
-3. Unzip the whole folder somewhere (not inside the zip) and run `StreamTimestamper.exe`.
-4. Windows may show a blue "Windows protected your PC" warning, because this is a new app that isn't code-signed (certificates cost money). If you downloaded it from the Releases page, click **More info → Run anyway**. Never turn off your antivirus for any app.
-
-Technical users can also confirm GitHub built the file from this source: `gh attestation verify <the zip> -R <owner>/<repo>`.
-
-This is an independent project and isn't affiliated with or endorsed by YouTube or Google. It uses the open-source yt-dlp library.
-
-## For the end user
-
-1. Unzip the folder and run `StreamTimestamper.exe`.
-2. The setup wizard opens on first launch. It covers the Gemini API key, how the app keeps your channel safe, the output folder, and a short guide to tuning the prompt.
-3. **Prompt** page: pick a preset and describe what to find. Then click **Save as my preset** and tick **Start with this preset**.
-4. **Run** page: paste stream, playlist or channel links, *or* add caption files. Then press **Start**.
-5. **Results** page: read and copy the output, or open the output folder.
+2. OPTIONAL hash check: in PowerShell run `Get-FileHash .\StreamTimestamper-vX.Y.Z-windows.zip` and compare the result with the text in the `.sha256` file on the same release page. They must match.
+3. Unzip the whole folder somewhere (not inside the zip) and run `StreamTimestamper.exe`. Windows may show a blue "Windows protected your PC" warning, because this is a new app that isn't code-signed (certificates cost money). If you downloaded it from the Releases page, click **More info → Run anyway**. Never turn off your antivirus for any app. Technical users can also confirm GitHub built the file from this source: `gh attestation verify <the zip> -R <owner>/<repo>`.
+4. The setup wizard opens on first launch. It covers the Gemini API key, how the app keeps your channel safe, the output folder, and a short guide to tuning the prompt.
+5. **Prompt** page: pick a preset and describe what to find. Then click **Save as my preset** and tick **Start with this preset**.
+6. **Run** page: paste stream, playlist or channel links, *or* add caption files. Then press **Start**.
+7. **Results** page: read and copy the output, or open the output folder.
 
 ## Account safety
 
