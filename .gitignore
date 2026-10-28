@@ -1,0 +1,20 @@
+# build output and local environments (never upload these)
+venv/
+build/
+dist/
+*.spec
+build-versions.txt
+__pycache__/
+*.pyc
+
+# personal settings / secrets (the app keeps these in %APPDATA%, never in this folder, but just in case)
+settings.json
+settings.bad
+*.tmp
+.env
+*.key
+cookies*.txt
+
+# release files
+*.zip
+*.sha256

@@ -1,0 +1,5 @@
+yt-dlp[default]
+google-genai
+customtkinter
+pyinstaller
+pillow
