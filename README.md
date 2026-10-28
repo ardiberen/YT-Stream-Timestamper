@@ -52,16 +52,8 @@ Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replac
 - No code is downloaded at runtime. yt-dlp's challenge solver ships inside the app, and Deno runs it with no file, network or system permissions (checked against yt-dlp's source).
 - The Gemini key is encrypted with Windows DPAPI (your Windows login). Copying `settings.json` to another PC/user, or a backup of it, doesn't expose the key. The setup wizard says whether encryption is active on that PC. If Windows refuses, the key is saved as plain text instead.
 - The key is stripped from the activity log and error messages.
-- Result file names are sanitised (no folders, no `..`, no Windows device names like `CON`).
+- Result file names are sanitized (no folders, no `..`, no Windows device names like `CON`).
 - No login, cookies or passwords are stored or used.
-
-**What isn't covered**
-
-- Malware already running as the same Windows user can still read the key while the app runs. DPAPI protects the file, not the session.
-- Privacy: under Google's Gemini API terms, content sent with a free (unpaid) key may be used to improve Google's products and read by human reviewers; paid keys are treated differently. Don't use a free key on private, unlisted or members-only streams.
-- Prompt injection: stream captions are untrusted text sent to Gemini. A speaker can say something that steers the AI's answer. The app never acts on the answer; it only saves it as text, so the worst case is a wrong or odd result file.
-- The exe isn't code-signed, so Windows SmartScreen and some antivirus tools may warn. Signing certificates cost money.
-- A build trusts whatever pip and the Deno on your PATH provide. `build.bat` saves `build-versions.txt` (exact package versions). Before sharing a build, run `pip install pip-audit` then `pip-audit` in the build venv, and get Deno from the official winget package.
 
 ## Build the exe (on Windows)
 
