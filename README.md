@@ -48,6 +48,11 @@ Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replac
 - Result file names are sanitized (no folders, no `..`, no Windows device names like `CON`).
 - No login, cookies or passwords are stored or used.
 
+**Good to know**
+
+- **Free Gemini keys and privacy:** under Google's terms, content sent with a free (unpaid) Gemini key may be used to improve Google's products and read by human reviewers. Don't use a free key on private, unlisted or members-only streams. Paid keys are treated differently, so check Google's Gemini API terms.
+- **Unsigned app:** the exe isn't code-signed (certificates cost money), so Windows or your antivirus may warn about it. The source is public and each release is built by GitHub from it.
+
 ## Build the exe (on Windows)
 
 ```
