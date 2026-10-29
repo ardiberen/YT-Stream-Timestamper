@@ -15,6 +15,8 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
+import net_ssl
+
 API_URL = "https://api.github.com/repos/{repo}/releases/latest"  # newest non-draft, non-prerelease release
 REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$")
 TAG_RE = re.compile(r"^v?(\d{1,4})\.(\d{1,4})\.(\d{1,4})$")
@@ -73,7 +75,7 @@ def fetch_latest_tag(repo: str, timeout: float = 8) -> Optional[str]:
         "Accept": "application/vnd.github+json",
         "User-Agent": "StreamTimestamper-update-check",
     })
-    opener = urllib.request.build_opener(_GitHubOnlyRedirects)
+    opener = urllib.request.build_opener(_GitHubOnlyRedirects, net_ssl.https_handler())
     with opener.open(req, timeout=timeout) as r:
         data = r.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:

@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+import net_ssl
+
 # --------------------------------------------------------------------------- errors
 
 
@@ -371,7 +373,7 @@ def download_text(url: str, retries: int = 3, stop: Optional[threading.Event] = 
     if not _caption_url_ok(url):
         raise _Refused("caption address isn't a secure YouTube address; refusing to download it")
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    opener = urllib.request.build_opener(_SafeRedirects)
+    opener = urllib.request.build_opener(_SafeRedirects, net_ssl.https_handler())
     last = None
     for attempt in range(1, retries + 1):
         try:

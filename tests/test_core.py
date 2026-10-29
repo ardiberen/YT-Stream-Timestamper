@@ -699,6 +699,50 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertIsNotNone(updates.parse_version(version.APP_VERSION))
 
 
+class TlsContextTests(unittest.TestCase):
+    """Our own HTTPS requests must trust the Windows store AND certifi, with verification fully on."""
+
+    def test_verification_stays_on(self):
+        import ssl
+        import net_ssl
+        ctx = net_ssl.make_context()
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(ctx.check_hostname)
+
+    def test_certifi_bundle_is_loaded(self):
+        import net_ssl
+        import ssl
+        try:
+            import certifi
+        except ImportError:
+            self.skipTest("certifi not installed here")
+        base = ssl.create_default_context().cert_store_stats()["x509_ca"]
+        self.assertGreaterEqual(net_ssl.make_context().cert_store_stats()["x509_ca"], base)
+        self.assertGreater(net_ssl.make_context().cert_store_stats()["x509_ca"], 0)
+
+    def test_works_without_certifi(self):
+        import builtins
+        import net_ssl
+        real = builtins.__import__
+
+        def no_certifi(name, *a, **k):
+            if name == "certifi":
+                raise ImportError("simulated")
+            return real(name, *a, **k)
+        builtins.__import__ = no_certifi
+        try:
+            ctx = net_ssl.make_context()
+        finally:
+            builtins.__import__ = real
+        import ssl
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+
+    def test_both_downloaders_use_the_handler(self):
+        import inspect
+        self.assertIn("net_ssl.https_handler()", inspect.getsource(core.download_text))
+        self.assertIn("net_ssl.https_handler()", inspect.getsource(updates.fetch_latest_tag))
+
+
 class ResultsListTests(unittest.TestCase):
     def test_list_and_title(self):
         with tempfile.TemporaryDirectory() as d:
