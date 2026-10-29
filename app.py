@@ -19,6 +19,7 @@ import customtkinter as ctk  # noqa: E402
 
 import core  # noqa: E402
 import prompt_builder as pb  # noqa: E402
+import runlog  # noqa: E402
 import settings as store  # noqa: E402
 import ui_common as ui  # noqa: E402
 import updates  # noqa: E402
@@ -28,6 +29,9 @@ from wizard import CaptionFileHelp, SetupWizard  # noqa: E402
 APP_NAME = ui.APP_NAME
 NO_PRESET = "(unsaved / custom)"
 COOLDOWN_HOURS = 6
+MIN_W, MIN_H = 900, 520  # smallest window (logical px): fits 1366x768 laptops at 125% scaling
+SPLIT_TOP_MIN, SPLIT_BOTTOM_MIN = 64, 200  # Run page: smallest links area / controls + Activity area
+MAX_LOG_LINES = 5000
 NAV = [("run", "▶", "Run"), ("prompt", "✎", "Prompt"), ("results", "☰", "Results"), ("settings", "⚙", "Settings")]
 PAGE_TEXT = {
     "run": ("Run", "Paste stream links (or add caption files) and press Start."),
@@ -47,8 +51,7 @@ class App(ctk.CTk):
         self.s = loaded
         self.title(APP_NAME)
         ui.apply_window_icon(self)
-        self.geometry("1140x800")
-        self.minsize(1000, 680)
+        self._fit_to_screen()
         self.configure(fg_color=ui.CONTENT_BG)
 
         self.q: queue.Queue = queue.Queue()
@@ -64,6 +67,12 @@ class App(ctk.CTk):
         self._selected_result = ""
         self._pending_select = ""
         self.caption_files: list[str] = []
+        self._log_lines: list[tuple[str, str]] = []  # (line, level) of the current/last run
+        self.log_window: LogWindow | None = None
+        self.runlog = runlog.RunLog()
+        self._split_placed = False
+        self._split_before = 0
+        self._split_user_moved = False
 
         self._init_vars()
         self._build()
@@ -106,6 +115,13 @@ class App(ctk.CTk):
         for k, d in pb.DEFAULT_FORM.items():
             self.fv[k] = self.v_min_seg if k == "min_minutes" else (bv(value=d) if isinstance(d, bool) else sv(value=d))
         self.v_key.trace_add("write", lambda *_: self._refresh_key_status())
+
+    # ================================================================== window size
+    def _scale(self) -> float:
+        return ui.window_scale(self)
+
+    def _fit_to_screen(self):
+        ui.fit_window(self, 1140, 800, MIN_W, MIN_H)
 
     # ================================================================== layout
     def _build(self):
@@ -180,9 +196,9 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------ Run page
     def _build_run(self, page):
         body = ctk.CTkFrame(page, fg_color="transparent")
-        body.grid(row=1, column=0, sticky="nsew", padx=32, pady=(16, 24))
+        body.grid(row=1, column=0, sticky="nsew", padx=32, pady=(16, 18))
         body.grid_columnconfigure(0, weight=1)
-        body.grid_rowconfigure(4, weight=1)
+        body.grid_rowconfigure(1, weight=1)
 
         # notice banner (hidden unless something needs attention)
         self.banner = ctk.CTkFrame(body, corner_radius=12, fg_color=ui.BANNER_WARN)
@@ -195,10 +211,31 @@ class App(ctk.CTk):
         self.banner.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         self.banner.grid_remove()
 
-        outer, inner = ui.card(body, "Stream links",
+        # links on top, controls + Activity below, with a bar between them that can be dragged up or down
+        sc = self._scale()
+        self.run_split = tk.PanedWindow(body, orient="vertical", sashwidth=max(6, int(8 * sc)), sashrelief="flat",
+                                        borderwidth=0, opaqueresize=True, showhandle=False,
+                                        sashcursor="sb_v_double_arrow", bg=ui.pick(ui.CARD_BORDER))
+        self.run_split.grid(row=1, column=0, sticky="nsew")
+        top = ctk.CTkFrame(self.run_split, fg_color=ui.CONTENT_BG, corner_radius=0)
+        top.grid_columnconfigure(0, weight=1)
+        top.grid_rowconfigure(0, weight=1)
+        links = ctk.CTkScrollableFrame(top, fg_color=ui.CONTENT_BG, corner_radius=0)
+        links.grid(row=0, column=0, sticky="nsew")
+        links.grid_columnconfigure(0, weight=1)
+        bottom = ctk.CTkFrame(self.run_split, fg_color=ui.CONTENT_BG, corner_radius=0)
+        bottom.grid_columnconfigure(0, weight=1)
+        bottom.grid_rowconfigure(2, weight=1)
+        self.run_split.add(top, minsize=int(SPLIT_TOP_MIN * sc), stretch="never")
+        self.run_split.add(bottom, minsize=int(SPLIT_BOTTOM_MIN * sc), stretch="always")
+        self.run_split.bind("<ButtonRelease-1>", self._on_split_moved, add="+")
+        self.run_split.bind("<Configure>", self._on_split_configure, add="+")
+
+        outer, inner = ui.card(links, "Stream links",
                                "One per line. Single streams, playlists, and channel links all work. "
                                "Channel links use that channel's newest streams (change how many in Settings).")
-        outer.grid(row=1, column=0, sticky="ew")
+        outer.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        self._links_card = outer
         inner.grid_columnconfigure(0, weight=1)
         self.urls_box = ctk.CTkTextbox(inner, height=110, font=ui.font(14), border_width=1,
                                        border_color=ui.CARD_BORDER)
@@ -227,8 +264,8 @@ class App(ctk.CTk):
                                                                                   pady=(4, 0))
         self._refresh_files_label()
 
-        ctl = ctk.CTkFrame(body, fg_color="transparent")
-        ctl.grid(row=2, column=0, sticky="ew", pady=16)
+        ctl = ctk.CTkFrame(bottom, fg_color="transparent")
+        ctl.grid(row=0, column=0, sticky="ew", pady=(12, 12))
         self.btn_start = ui.button(ctl, "▶  Start", self.start, width=150, height=44, font=ui.font(16, "bold"))
         self.btn_start.pack(side="left")
         self.btn_stop = ui.button(ctl, "■  Stop", self.stop, kind="danger", width=110, height=44, state="disabled")
@@ -238,8 +275,8 @@ class App(ctk.CTk):
                                   height=44)
         self.btn_view.pack(side="right", padx=10)
 
-        prog = ctk.CTkFrame(body, fg_color="transparent")
-        prog.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        prog = ctk.CTkFrame(bottom, fg_color="transparent")
+        prog.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         prog.grid_columnconfigure(0, weight=1)
         self.progress = ctk.CTkProgressBar(prog, height=10, corner_radius=5, progress_color=ui.ACCENT)
         self.progress.set(0)
@@ -247,13 +284,70 @@ class App(ctk.CTk):
         self.status_lbl = ui.label(prog, "Ready.", 13, color=ui.MUTED)
         self.status_lbl.grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
-        lo, li = ui.card(body, "Activity")
-        lo.grid(row=4, column=0, sticky="nsew")
+        lo, li = ui.card(bottom, "Activity")
+        lo.grid(row=2, column=0, sticky="nsew")
+        bar = ctk.CTkFrame(lo, fg_color="transparent")
+        bar.grid(row=0, column=0, sticky="e", padx=16, pady=(12, 0))
+        ui.label(bar, "Drag the bar above to resize", 12, color=ui.MUTED).pack(side="left", padx=(0, 10))
+        ui.button(bar, "Open log folder", self.open_log_folder, kind="ghost", height=28,
+                  font=ui.font(13)).pack(side="left")
+        ui.button(bar, "Pop out ⧉", self.open_log_window, kind="secondary", height=28,
+                  font=ui.font(13)).pack(side="left", padx=(6, 0))
         li.grid_columnconfigure(0, weight=1)
         li.grid_rowconfigure(0, weight=1)
-        self.log_box = ctk.CTkTextbox(li, state="disabled", font=ui.mono(12), fg_color="transparent")
+        self.log_box = ctk.CTkTextbox(li, state="disabled", font=ui.mono(12), fg_color="transparent", wrap="word")
         self.log_box.grid(row=0, column=0, columnspan=2, sticky="nsew")
         self._config_log_tags()
+
+    # ---- the draggable bar between the links and the Activity log
+    def _split_y(self) -> int:
+        try:
+            return int(self.run_split.sash_coord(0)[1])
+        except (tk.TclError, IndexError, TypeError, ValueError):
+            return 0
+
+    def _place_split(self, y: int):
+        try:
+            self.run_split.sash_place(0, 0, max(1, int(y)))
+        except tk.TclError:
+            pass
+
+    def _on_split_configure(self, event=None):
+        """First time the Run page has a real size: put the bar where it was last left (or fit the links)."""
+        if self._split_placed:
+            return
+        h = self.run_split.winfo_height()
+        if h < 100:
+            return
+        self._split_placed = True
+        try:
+            frac = float(self.s.get("run_split") or 0)
+        except (TypeError, ValueError):
+            frac = 0.0
+        if 0.05 <= frac <= 0.9:
+            y = int(h * frac)
+        else:
+            y = min(self._links_card.winfo_reqheight() + int(14 * self._scale()), int(h * 0.55))
+        self._place_split(y)
+
+    def _on_split_moved(self, event=None):
+        if self.worker and self.worker.is_alive():
+            self._split_user_moved = True  # keep where they put it during a run
+            return
+        h, y = self.run_split.winfo_height(), self._split_y()
+        if h >= 100 and y > 0:
+            self.s["run_split"] = round(y / h, 3)
+
+    def _collapse_links(self):
+        """During a run, give the Activity log most of the page (the links can still be scrolled or dragged open)."""
+        self._split_user_moved = False
+        self._split_before = self._split_y()
+        self._place_split(int(SPLIT_TOP_MIN * self._scale()))
+
+    def _restore_links(self):
+        if self._split_before and not self._split_user_moved:
+            self._place_split(self._split_before)
+        self._split_before = 0
 
     # ------------------------------------------------------------------ Prompt page
     def _build_prompt(self, page):
@@ -667,6 +761,7 @@ class App(ctk.CTk):
             if not messagebox.askyesno(APP_NAME, "A run is in progress. Stop it and quit?"):
                 return
             self.stop_event.set()
+        self.runlog.close()
         try:
             self.collect()
             store.save(self.s)
@@ -678,6 +773,12 @@ class App(ctk.CTk):
         self.v_appearance.set(value)
         ctk.set_appearance_mode(value.lower())
         self._config_log_tags()
+        try:
+            self.run_split.configure(bg=ui.pick(ui.CARD_BORDER))
+        except tk.TclError:
+            pass
+        if self.log_window is not None and self.log_window.winfo_exists():
+            self.log_window.config_tags()
         self.persist()
 
     # ================================================================== prompt form + presets
@@ -973,9 +1074,11 @@ class App(ctk.CTk):
 
         self.stop_event.clear()
         self._clear_log()
+        self.runlog.start(self._log_header(cfg, urls, files))
         self.progress.set(0)
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
+        self._collapse_links()
         self.btn_view.configure(fg_color=ui.SECONDARY, hover_color=ui.SECONDARY_HOVER, text_color=ui.TEXT,
                                 text="View results")
         self.hide_banner()
@@ -1002,23 +1105,51 @@ class App(ctk.CTk):
 
     # ================================================================== queue -> UI
     def _config_log_tags(self):
-        for tag, pair in (("warn", ui.WARN), ("error", ui.ERROR), ("ok", ui.OK)):
-            self.log_box.tag_config(tag, foreground=ui.pick(pair))
+        config_log_tags(self.log_box)
 
     def _clear_log(self):
-        self.log_box.configure(state="normal")
-        self.log_box.delete("1.0", "end")
-        self.log_box.configure(state="disabled")
+        self._log_lines = []
+        for box in self._log_boxes():
+            box.configure(state="normal")
+            box.delete("1.0", "end")
+            box.configure(state="disabled")
+
+    def _log_boxes(self) -> list:
+        boxes = [self.log_box]
+        if self.log_window is not None and self.log_window.winfo_exists():
+            boxes.append(self.log_window.box)
+        return boxes
 
     def _append_log(self, msg: str, level: str):
-        self.log_box.configure(state="normal")
-        stamp = time.strftime("%H:%M:%S")
-        if level in ("warn", "error", "ok"):
-            self.log_box.insert("end", f"[{stamp}] {msg}\n", level)
-        else:
-            self.log_box.insert("end", f"[{stamp}] {msg}\n")
-        self.log_box.see("end")
-        self.log_box.configure(state="disabled")
+        line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+        self._log_lines.append((line, level))
+        if len(self._log_lines) > MAX_LOG_LINES:
+            del self._log_lines[:len(self._log_lines) - MAX_LOG_LINES]
+        for box in self._log_boxes():
+            append_log_line(box, line, level)
+        self.runlog.write(core.redact(line, self.s.get("api_key", "")))
+
+    def _log_header(self, cfg, urls: str, files: list) -> list[str]:
+        import platform
+        n_links = len([u for u in urls.splitlines() if u.strip()])
+        return [f"{APP_NAME} {ui.VERSION} - run started {time.strftime('%Y-%m-%d %H:%M:%S')}",
+                f"Windows: {platform.platform()}",
+                f"Model: {cfg.model} | links: {n_links} | caption files: {len(files)}",
+                ""]
+
+    def open_log_window(self):
+        if self.log_window is not None and self.log_window.winfo_exists():
+            self.log_window.deiconify()
+            self.log_window.lift()
+            self.log_window.focus_force()
+            return
+        self.log_window = LogWindow(self)
+
+    def open_log_folder(self):
+        try:
+            ui.open_path(str(runlog.log_dir()))
+        except OSError as e:
+            messagebox.showwarning(APP_NAME, f"Couldn't open the log folder: {e}")
 
     # ================================================================== update notice
     def _startup_update_check(self):
@@ -1096,8 +1227,15 @@ class App(ctk.CTk):
         self.after(100, self._poll)
 
     def _on_finished(self, sm: dict):
+        try:
+            self._finish_run_ui(sm)
+        finally:
+            self.runlog.close()
+
+    def _finish_run_ui(self, sm: dict):
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
+        self._restore_links()
         text = f"Finished: {sm['done']} saved, {sm['skipped']} skipped, {sm['failed']} failed."
         if sm["stopped"]:
             text = "Stopped. " + text
@@ -1132,6 +1270,49 @@ class App(ctk.CTk):
                 self.open_wizard("gemini")
         elif sm["error"]:
             messagebox.showerror(APP_NAME, sm["error"])
+
+
+def config_log_tags(box):
+    for tag, pair in (("warn", ui.WARN), ("error", ui.ERROR), ("ok", ui.OK)):
+        box.tag_config(tag, foreground=ui.pick(pair))
+
+
+def append_log_line(box, line: str, level: str):
+    box.configure(state="normal")
+    if level in ("warn", "error", "ok"):
+        box.insert("end", line + "\n", level)
+    else:
+        box.insert("end", line + "\n")
+    box.see("end")
+    box.configure(state="disabled")
+
+
+class LogWindow(ctk.CTkToplevel):
+    """The Activity log in its own resizable window (e.g. on a second screen). Updates live."""
+
+    def __init__(self, app: App):
+        super().__init__(app)
+        self.app = app
+        self.title(f"{APP_NAME} - Activity")
+        ui.apply_window_icon(self)
+        ui.fit_window(self, 820, 520, 420, 260)
+        self.configure(fg_color=ui.CONTENT_BG)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
+        bar.grid_columnconfigure(0, weight=1)
+        ui.label(bar, "Activity (updates live)", 15, "bold").grid(row=0, column=0, sticky="w")
+        ui.button(bar, "Open log folder", app.open_log_folder, kind="secondary", height=30).grid(row=0, column=1)
+        self.box = ctk.CTkTextbox(self, state="disabled", font=ui.mono(12), wrap="word")
+        self.box.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
+        self.config_tags()
+        for line, level in app._log_lines:
+            append_log_line(self.box, line, level)
+        self.after(250, self.lift)
+
+    def config_tags(self):
+        config_log_tags(self.box)
 
 
 def main():

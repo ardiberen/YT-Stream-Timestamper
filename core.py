@@ -41,6 +41,21 @@ class ApiKeyProblem(Exception):
     """Gemini rejected the API key."""
 
 
+class NetworkTrustProblem(Exception):
+    """A secure (HTTPS) connection couldn't be verified: usually a network that inspects or blocks traffic."""
+
+
+TLS_PROBLEM_MSG = ("The secure connection to {what} couldn't be verified, so nothing was sent. This usually means "
+                   "the network you're on (work, school or guest Wi-Fi) inspects or blocks this kind of traffic. "
+                   "Try a different network, such as home Wi-Fi or a phone hotspot.")
+
+
+def is_tls_problem(e) -> bool:
+    """True for certificate-verification failures (never for other network errors)."""
+    text = f"{type(e).__name__} {e}"
+    return "CERTIFICATE_VERIFY_FAILED" in text or "SSLCertVerificationError" in text
+
+
 # --------------------------------------------------------------------------- config
 
 
@@ -392,6 +407,8 @@ def download_text(url: str, retries: int = 3, stop: Optional[threading.Event] = 
                 raise RuntimeError(f"caption download refused (HTTP {e.code})")
             last = e
         except Exception as e:  # noqa: BLE001
+            if is_tls_problem(e):
+                raise NetworkTrustProblem(TLS_PROBLEM_MSG.format(what="YouTube"))
             last = e
         wait = attempt * 5
         if stop is not None:
@@ -407,7 +424,10 @@ def generate(api_key: str, model: str, system: str, transcript: str) -> str:
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=api_key)
+    # The SDK on its own trusts only its bundled certificate list; also trust the Windows store, like browsers do
+    # (needed on networks whose HTTPS inspection certificate is installed in Windows). Verification stays on.
+    client = genai.Client(api_key=api_key,
+                          http_options=types.HttpOptions(client_args={"verify": net_ssl.make_context()}))
     resp = client.models.generate_content(
         model=model,
         contents=f"Transcript:\n{transcript}",
@@ -422,6 +442,8 @@ def test_api_key(api_key: str, model: str) -> tuple[bool, str]:
         return True, f"Works. Model replied: {text.strip()[:40] or '(empty)'}"
     except Exception as e:  # noqa: BLE001
         msg = str(e)
+        if is_tls_problem(e):
+            return False, TLS_PROBLEM_MSG.format(what="Google's Gemini")
         if KEY_RE.search(msg):
             return False, "Gemini rejected this API key."
         if "404" in msg or "NOT_FOUND" in msg:
@@ -614,6 +636,9 @@ class Runner:
         self.status(f"Asking Gemini: {title[:60]}")
         self.log(f"Sending {len(lines)} caption lines to {self.cfg.model} ...")
         text = self._ask_gemini(transcript)
+        if text is None:
+            self.log(f"{title[:60]}: nothing saved because the Gemini request failed (see above).", "error")
+            return "failed"
         if not text.strip():
             self.log(f"{title[:60]}: Gemini returned an empty answer (possibly blocked). Nothing saved.", "error")
             return "failed"
@@ -665,6 +690,8 @@ class Runner:
                 return "failed", True
             if BLOCKED_RE.search(msg):
                 raise YouTubeBlocked(msg)
+            if is_tls_problem(e):
+                raise NetworkTrustProblem(TLS_PROBLEM_MSG.format(what="YouTube"))
             self.log(f"{vid}: could not get video info: {_last_line(msg)}", "error")
             return "failed", True
 
@@ -694,7 +721,7 @@ class Runner:
         try:
             raw = download_text(sub_url, stop=self.stop)
             lines = parse_json3(raw) if ext == "json3" else parse_vtt(raw)
-        except (StopRequested, YouTubeBlocked):
+        except (StopRequested, YouTubeBlocked, NetworkTrustProblem):
             raise
         except Exception as e:  # noqa: BLE001
             self.log(f"{vid}: caption problem: {e}", "error")
@@ -704,7 +731,8 @@ class Runner:
             return "failed", True
         return self._finish(lines, title, Path(c.output_dir, f"{safe_filename(title)} [{vid}].txt")), True
 
-    def _ask_gemini(self, transcript: str) -> str:
+    def _ask_gemini(self, transcript: str) -> Optional[str]:
+        """The answer text, or None if the request failed (the reason is already logged)."""
         system = build_system_prompt(self.cfg.prompt, self.cfg.min_segment_minutes)
         for attempt in range(1, self.cfg.max_retries + 1):
             self._check_stop()
@@ -712,6 +740,8 @@ class Runner:
                 return generate(self.cfg.api_key, self.cfg.model, system, transcript)
             except Exception as e:  # noqa: BLE001
                 msg = str(e)
+                if is_tls_problem(e):
+                    raise NetworkTrustProblem(TLS_PROBLEM_MSG.format(what="Google's Gemini"))
                 if KEY_RE.search(msg):
                     raise ApiKeyProblem(msg)
                 if RETRYABLE_RE.search(msg) and attempt < self.cfg.max_retries:
@@ -720,8 +750,8 @@ class Runner:
                     self._sleep(wait)
                     continue
                 self.log(f"Gemini error: {msg[:300]}", "error")
-                return ""
-        return ""
+                return None
+        return None
 
     # ---- main loop
     def run(self) -> dict:
@@ -756,7 +786,7 @@ class Runner:
                         status = self._process_file(target)
                     else:
                         status, touched = self._process_video(key, target)
-                except (StopRequested, YouTubeBlocked, ApiKeyProblem):
+                except (StopRequested, YouTubeBlocked, ApiKeyProblem, NetworkTrustProblem):
                     raise
                 except Exception as e:  # noqa: BLE001
                     self.log(f"{key}: unexpected error: {e}", "error")

@@ -20,7 +20,7 @@ This is an independent project and isn't affiliated with or endorsed by YouTube 
 - Email: streamtimestamper.help@protonmail.com
 - Or open an issue on this project's **Issues** tab (needs a free GitHub account).
 
-Please include the version number (bottom of the left sidebar), what you clicked, and a screenshot of the Activity log on the Run page. Never send your Gemini API key or your settings file. Nobody needs them to help you, and I will never ask for them.
+Please include the version number (bottom of the left sidebar), what you clicked, and the log of the run that went wrong: on the Run page, click **Open log folder** and attach the newest `run-...txt` file (the API key is already removed from it), or send a screenshot of the Activity log. Never send your Gemini API key or your settings file. Nobody needs them to help you, and I will never ask for them.
 
 ## Account safety
 
@@ -40,7 +40,7 @@ Guardrails (in Settings → YouTube safety):
 
 **Caption files** have zero contact with YouTube. In YouTube Studio: Languages (left menu) → pick the stream → make sure a language is set → click the pencil next to "Video language" → ⋮ next to Automatic subtitles → Download (.vtt, .srt or .sbv). Then on the Run page, use **Add caption files…**. This works only for people with Studio access to the channel.
 
-Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replacing the app folder with a newer version keeps all of it. The Gemini API key is stored encrypted there (see Security).
+Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replacing the app folder with a newer version keeps all of it. The Gemini API key is stored encrypted there (see Security). The Activity log of each of the last 10 runs is saved as a text file in `%APPDATA%\StreamTimestamper\logs` (Run page → **Open log folder**). Older ones are deleted automatically.
 
 ## Security
 
@@ -52,7 +52,8 @@ Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replac
 - Caption downloads must be `https` on a YouTube/Google address, including after redirects, and are capped at 25 MB. Caption files you add are capped at 25 MB too.
 - No code is downloaded at runtime. yt-dlp's challenge solver ships inside the app, and Deno runs it with no file, network or system permissions (checked against yt-dlp's source).
 - The Gemini key is encrypted with Windows DPAPI (your Windows login). Copying `settings.json` to another PC/user, or a backup of it, doesn't expose the key. The setup wizard says whether encryption is active on that PC. If Windows refuses, the key is saved as plain text instead.
-- The key is stripped from the activity log and error messages.
+- The key is stripped from the activity log, the saved log files and error messages.
+- Certificate checks are always on. The app trusts the same certificates Windows does, plus Mozilla's list that ships with it. If a network intercepts the connection with a certificate Windows doesn't trust (some work, school or guest Wi-Fi does this), the app stops and says so instead of sending anything.
 - Result file names are sanitized (no folders, no `..`, no Windows device names like `CON`).
 - No login, cookies or passwords are stored or used.
 
@@ -101,4 +102,6 @@ python -m unittest discover -s tests -v      (logic: no extra packages needed)
 | `settings.py` | settings.json load/save; encrypts the API key |
 | `version.py` | App version (the GitHub build adds the repo name for update checks) |
 | `updates.py` | Once-a-day "new version available" check against GitHub Releases |
+| `net_ssl.py` | Certificate settings for the app's own HTTPS requests (Windows store + bundled list) |
+| `runlog.py` | Saves each run's Activity log to a file (last 10 kept) |
 | `assets/` | `icon.ico`, `icon.png`, and `make_icon.py` to rebuild them |

@@ -103,6 +103,36 @@ pump(lambda: a.btn_start.kw.get("state") == "normal", timeout=10)
 check("1 saved" in a.status_lbl.kw["text"], "link run saved 1: " + a.status_lbl.kw["text"])
 check(FETCHED, "YouTube was queried for the link")
 
+print("3b. layout and logs")
+sp = a.run_split
+sp.binds["<Configure>"]()
+check(sp.sash[0] == 300 + 14, "divider starts just below the links card")
+sp.sash_place(0, 0, 240)
+sp.binds["<ButtonRelease-1>"]()
+check(a.s["run_split"] == 0.4, "dragged divider position remembered")
+import runlog
+logs = sorted(runlog.log_dir().glob("run-*.txt"))
+check(len(logs) == 1 and "1 saved" in logs[0].read_text(encoding="utf-8"), "run log file written")
+check("GOODKEY" not in logs[0].read_text(encoding="utf-8"), "API key not in the log file")
+a.open_log_window()
+lw = a.log_window
+check(lw is not None and "1 saved" in lw.box.buf, "pop-out window shows the current log")
+a._append_log("live line", "info")
+check("live line" in lw.box.buf and "live line" in a.log_box.buf, "pop-out updates live")
+a.open_log_window()
+check(a.log_window is lw, "second click reuses the open window")
+orig_place = a._place_split
+moves = []
+a._place_split = lambda y: (moves.append(y), orig_place(y))
+a.urls_box.buf = "https://www.youtube.com/live/WbPksTZLcRA"
+a.v_skip.set(False)
+a.start()
+pump(lambda: a.btn_start.kw.get("state") == "normal", timeout=10)
+check(moves[:1] == [64] and moves[-1] == 240, "links shrink during a run and come back after: %r" % moves)
+a._place_split = orig_place
+a.v_skip.set(True)
+check(len(list(runlog.log_dir().glob("run-*.txt"))) == 2, "one log file per run")
+
 print("4. caption files")
 vtt = Path(tmp, "Stream 12.vtt")
 vtt.write_text("WEBVTT\n\n00:01:00.000 --> 00:01:02.000\ncaller joins\n", encoding="utf-8")

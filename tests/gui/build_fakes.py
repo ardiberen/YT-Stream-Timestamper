@@ -53,6 +53,19 @@ class DoubleVar(Variable):
     _default = 0.0
 CENTER = "center"
 END = "end"
+class TclError(Exception):
+    pass
+class PanedWindow:
+    def __init__(self, master=None, **kw):
+        self.kw, self.panes, self.sash, self.height, self.binds = dict(kw), [], [0], 600, {}
+    def grid(self, **kw): self.gridded = True
+    def add(self, child, **kw): self.panes.append((child, kw))
+    def bind(self, ev, fn=None, add=None): self.binds[ev] = fn
+    def configure(self, **kw): self.kw.update(kw)
+    config = configure
+    def winfo_height(self): return self.height
+    def sash_coord(self, i): return (0, self.sash[i])
+    def sash_place(self, i, x, y): self.sash[i] = y
 '''
 open(os.path.join(OUT, "tkinter", "__init__.py"), "w").write(TK)
 open(os.path.join(OUT, "tkinter", "messagebox.py"), "w").write(r'''
@@ -145,6 +158,11 @@ class _W:
     def iconbitmap(self, *a, **k): self._icon = a
     def iconphoto(self, *a, **k): self._icon = a
     def update(self): pass
+    def deiconify(self): pass
+    def winfo_reqheight(self): return 300
+    def winfo_height(self): return 600
+    def winfo_screenwidth(self): return 1366
+    def winfo_screenheight(self): return 768
 
 def run_after(limit=200):
     n = 0

@@ -103,6 +103,47 @@ def card(parent, title: str | None = None, subtitle: str | None = None, wrap: in
     return outer, inner
 
 
+def work_area(win) -> tuple[int, int, int, int]:
+    """(left, top, width, height) in screen pixels of the usable desktop (without the taskbar)."""
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            rect = wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):  # SPI_GETWORKAREA
+                w, h = rect.right - rect.left, rect.bottom - rect.top
+                if w > 0 and h > 0:
+                    return rect.left, rect.top, w, h
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        return 0, 0, int(win.winfo_screenwidth()), int(win.winfo_screenheight()) - 48
+    except Exception:  # noqa: BLE001
+        return 0, 0, 1280, 720
+
+
+def window_scale(win) -> float:
+    try:
+        return float(win._get_window_scaling())
+    except Exception:  # noqa: BLE001
+        return 1.0
+
+
+def fit_window(win, width: int, height: int, min_width: int, min_height: int) -> None:
+    """Size a window (logical px, like CTk's geometry) so it fits the usable screen, centered, and let it shrink
+    to at least min_width x min_height (or the screen, if smaller). Matters on small laptops at 125-150%."""
+    scale = window_scale(win)
+    x0, y0, sw, sh = work_area(win)
+    title_bar = int(32 * scale)
+    w = int(min(width, sw * 0.94 / scale))
+    h = int(min(height, (sh * 0.94 - title_bar) / scale))
+    win.minsize(min(min_width, w), min(min_height, h))
+    x = x0 + max(0, int((sw - w * scale) / 2))
+    y = y0 + max(0, int((sh - h * scale - title_bar) / 2))
+    win.geometry(f"{w}x{h}+{x}+{y}")
+
+
 def ago(days: float | None) -> str:
     if days is None:
         return "never"

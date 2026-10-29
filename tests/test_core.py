@@ -743,6 +743,129 @@ class TlsContextTests(unittest.TestCase):
         self.assertIn("net_ssl.https_handler()", inspect.getsource(updates.fetch_latest_tag))
 
 
+class NetworkTrustTests(FakeRunTests):
+    """Certificate failures (e.g. a network that inspects HTTPS) stop the run with a plain message."""
+
+    TLS = "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate"
+
+    def test_detection(self):
+        import ssl
+        self.assertTrue(core.is_tls_problem(RuntimeError(self.TLS)))
+        self.assertTrue(core.is_tls_problem(ssl.SSLCertVerificationError("x")))
+        for other in ("timed out", "HTTP 503", "SSL: WRONG_VERSION_NUMBER", "Connection reset"):
+            self.assertFalse(core.is_tls_problem(RuntimeError(other)), other)
+
+    def test_gemini_tls_stops_run_with_plain_message(self):
+        core.generate = lambda *a: (_ for _ in ()).throw(RuntimeError(self.TLS))
+        sm = self.make("aaaaaaaaaaa\nhttps://youtu.be/ddddddddddd").run()
+        self.assertIn("network you're on", sm["error"])
+        self.assertIn("Gemini", sm["error"])
+        self.assertFalse(any("empty answer" in m for _, m in self.logs), self.logs)
+        self.assertEqual(sm["done"], 0)
+
+    def test_caption_tls_not_retried(self):
+        calls = []
+
+        def boom(url, retries=3, stop=None):
+            calls.append(url)
+            raise core.NetworkTrustProblem(core.TLS_PROBLEM_MSG.format(what="YouTube"))
+        core.download_text = boom
+        sm = self.make("aaaaaaaaaaa").run()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("YouTube", sm["error"])
+
+    def test_download_text_tls_raises_at_once(self):
+        import ssl
+        import urllib.error
+        import urllib.request
+        attempts = []
+
+        class FakeOpener:
+            def open(self, req, timeout=60):
+                attempts.append(1)
+                raise urllib.error.URLError(ssl.SSLCertVerificationError(1, self_tls))
+        self_tls = self.TLS
+        orig = urllib.request.build_opener
+        urllib.request.build_opener = lambda *h: FakeOpener()
+        try:
+            with self.assertRaises(core.NetworkTrustProblem):
+                self.orig_dl("https://www.youtube.com/api/timedtext?v=x")
+        finally:
+            urllib.request.build_opener = orig
+        self.assertEqual(len(attempts), 1)
+
+    def test_other_gemini_error_message(self):
+        core.generate = lambda *a: (_ for _ in ()).throw(RuntimeError("400 INVALID_ARGUMENT something"))
+        sm = self.make("aaaaaaaaaaa").run()
+        self.assertEqual(sm["failed"], 1)
+        msgs = " ".join(m for _, m in self.logs)
+        self.assertIn("Gemini request failed", msgs)
+        self.assertNotIn("empty answer", msgs)
+
+    def test_genuinely_empty_answer_still_reported(self):
+        core.generate = lambda *a: "  "
+        self.make("aaaaaaaaaaa").run()
+        self.assertTrue(any("empty answer" in m for _, m in self.logs))
+
+    def test_key_test_message(self):
+        orig = core.generate
+        core.generate = lambda *a: (_ for _ in ()).throw(RuntimeError(self.TLS))
+        try:
+            ok, msg = core.test_api_key("k", "m")
+        finally:
+            core.generate = orig
+        self.assertFalse(ok)
+        self.assertIn("network you're on", msg)
+
+    def test_gemini_client_uses_windows_store_too(self):
+        import inspect
+        src = inspect.getsource(self.orig_gen)
+        self.assertIn('client_args={"verify": net_ssl.make_context()}', src)
+
+
+class RunLogTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_writes_and_keeps_newest(self):
+        import runlog
+        for i in range(12):
+            Path(self.dir, f"run-2026-01-{i + 1:02d}_00-00-00.txt").write_text("old")
+        Path(self.dir, "notes.txt").write_text("keep me")
+        log = runlog.RunLog(self.dir, keep=10)
+        log.start(["header"])
+        log.write("[12:00:00] hello")
+        log.close()
+        runs = sorted(p.name for p in self.dir.glob("run-*.txt"))
+        self.assertEqual(len(runs), 10)
+        self.assertIn(log.path.name, runs)
+        self.assertNotIn("run-2026-01-01_00-00-00.txt", runs)
+        self.assertTrue(Path(self.dir, "notes.txt").exists())  # only its own files are pruned
+        self.assertEqual(log.path.read_text(encoding="utf-8"), "header\n[12:00:00] hello\n")
+
+    def test_failures_never_raise(self):
+        import runlog
+        blocker = Path(self.dir, "afile")
+        blocker.write_text("x")
+        log = runlog.RunLog(blocker / "logs")  # can't create a folder inside a file
+        log.start(["h"])
+        log.write("line")
+        log.close()
+        self.assertIsNone(log.path)
+
+    def test_write_after_close_is_ignored(self):
+        import runlog
+        log = runlog.RunLog(self.dir)
+        log.start()
+        log.close()
+        log.write("late")
+        self.assertEqual(log.path.read_text(encoding="utf-8"), "")
+
+
 class ResultsListTests(unittest.TestCase):
     def test_list_and_title(self):
         with tempfile.TemporaryDirectory() as d:

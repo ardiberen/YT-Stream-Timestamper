@@ -46,7 +46,7 @@ class CaptionFileHelp(ctk.CTkToplevel):
     def __init__(self, parent, on_add=None):
         super().__init__(parent)
         self.title("Get a caption file from YouTube Studio")
-        self.geometry("680x560")
+        ui.fit_window(self, 680, 560, 480, 360)
         self.configure(fg_color=ui.CONTENT_BG)
         self.transient(parent)
         ui.apply_window_icon(self)
@@ -89,8 +89,7 @@ class SetupWizard(ctk.CTkToplevel):
 
         title = "Set up " + ui.APP_NAME if only is None else self.steps[0][1]
         self.title(title)
-        self.geometry("900x700")
-        self.minsize(780, 580)
+        ui.fit_window(self, 900, 700, 720, 480)
         self.configure(fg_color=ui.CONTENT_BG)
         self.transient(app)
         ui.apply_window_icon(self)

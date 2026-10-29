@@ -98,6 +98,7 @@ DEFAULTS = {
     "check_updates": True,  # once a day, ask GitHub whether a newer version exists (never downloads anything)
     "last_update_check": 0,  # epoch seconds of the last check
     "update_available": "",  # newest version seen on GitHub, e.g. "0.5.1" ("" = none newer)
+    "run_split": 0.0,  # share of the Run page height given to the links area (0 = automatic)
 }
 
 
