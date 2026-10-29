@@ -1,4 +1,5 @@
 # build output and local environments (never upload these)
+build_info.py
 venv/
 build/
 dist/

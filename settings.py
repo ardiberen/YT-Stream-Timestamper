@@ -95,6 +95,9 @@ DEFAULTS = {
     "advanced_text": "",  # current hand-edited prompt text
     "draft_prompt": "",  # final prompt text that will be sent (computed on Start)
     "last_urls": "",
+    "check_updates": True,  # once a day, ask GitHub whether a newer version exists (never downloads anything)
+    "last_update_check": 0,  # epoch seconds of the last check
+    "update_available": "",  # newest version seen on GitHub, e.g. "0.5.1" ("" = none newer)
 }
 
 

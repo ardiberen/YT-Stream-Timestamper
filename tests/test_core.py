@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import core  # noqa: E402
 import settings  # noqa: E402
+import updates  # noqa: E402
+import version  # noqa: E402
 
 
 class UrlTests(unittest.TestCase):
@@ -625,6 +627,76 @@ class SecretStorageTests(unittest.TestCase):
         s = settings.load(self.path)
         settings.save(s, self.path)
         self.assertEqual(settings.load(self.path)["api_key"], "")
+
+
+class UpdateCheckTests(unittest.TestCase):
+    """The 'new version available' check: strict parsing, no downloads, never raises."""
+
+    def setUp(self):
+        self.orig = updates.fetch_latest_tag
+
+    def tearDown(self):
+        updates.fetch_latest_tag = self.orig
+
+    def test_parse_version(self):
+        p = updates.parse_version
+        self.assertEqual(p("v0.5.0"), (0, 5, 0))
+        self.assertEqual(p("1.12.3"), (1, 12, 3))
+        for bad in ("", None, "v1.2", "1.2.3-beta", "v1.2.3.4", "<script>", "v1.2.3 ", "latest", "v1.2.x"):
+            if bad == "v1.2.3 ":
+                self.assertEqual(p(bad), (1, 2, 3))  # surrounding spaces are fine
+            else:
+                self.assertIsNone(p(bad), bad)
+        self.assertGreater(p("0.10.0"), p("0.9.9"))  # numeric, not text, comparison
+
+    def test_repo_names(self):
+        self.assertTrue(updates.repo_ok("ardiberen/stream-timestamper"))
+        for bad in ("", "noslash", "a/b/c", "../etc/passwd", "evil.com/x", "a b/c", "owner/", "/repo",
+                    "owner/repo?x=1", "owner/repo#x"):
+            self.assertFalse(updates.repo_ok(bad), bad)
+
+    def test_links_are_built_locally(self):
+        self.assertEqual(updates.releases_page("me/app"), "https://github.com/me/app/releases/latest")
+        self.assertEqual(updates.help_page("me/app"), "https://github.com/me/app#getting-help")
+
+    def test_check_results(self):
+        cases = [("v0.6.0", ("newer", "0.6.0")), ("v0.5.0", ("current", None)), ("0.4.9", ("current", None)),
+                 ("v0.6.0-rc1", ("failed", None)), (None, ("failed", None)), ("<b>v9.9.9</b>", ("failed", None))]
+        for tag, want in cases:
+            updates.fetch_latest_tag = lambda repo, timeout=8, t=tag: t
+            self.assertEqual(updates.check("me/app", "0.5.0"), want, tag)
+
+    def test_check_never_raises(self):
+        def boom(repo, timeout=8):
+            raise OSError("offline")
+        updates.fetch_latest_tag = boom
+        self.assertEqual(updates.check("me/app", "0.5.0"), ("failed", None))
+        updates.fetch_latest_tag = self.orig
+        self.assertEqual(updates.check("not a repo", "0.5.0"), ("failed", None))  # rejected before any network
+
+    def test_redirects_must_stay_on_api_github(self):
+        import urllib.request as ur
+        h = updates._GitHubOnlyRedirects()
+        req = ur.Request("https://api.github.com/repos/me/app/releases/latest")
+        for bad in ("https://evil.example/x", "http://api.github.com/x", "https://api.github.com.evil.example/x",
+                    "file:///etc/passwd"):
+            with self.assertRaises(updates._Refused, msg=bad):
+                h.redirect_request(req, None, 301, "Moved", {}, bad)
+        self.assertIsNotNone(h.redirect_request(req, None, 301, "Moved", {},
+                                                "https://api.github.com/repositories/1/releases/latest"))
+
+    def test_daily_throttle(self):
+        now = 1_000_000.0
+        self.assertTrue(updates.is_due(0, now))
+        self.assertFalse(updates.is_due(now - 3600, now))
+        self.assertTrue(updates.is_due(now - 25 * 3600, now))
+        self.assertTrue(updates.is_due(now + 10_000, now))  # clock moved backwards
+        self.assertTrue(updates.is_due("garbage", now))
+
+    def test_local_build_has_no_repo(self):
+        if not Path(version.__file__).with_name("build_info.py").exists():
+            self.assertEqual(version.GITHUB_REPO, "")
+        self.assertIsNotNone(updates.parse_version(version.APP_VERSION))
 
 
 class ResultsListTests(unittest.TestCase):

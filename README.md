@@ -1,4 +1,4 @@
-# YT Stream Timestamper
+# Stream Timestamper
 
 Reads the captions of YouTube streams, has Gemini find the segments you care about, and saves a timestamp list for each stream.
 
@@ -6,13 +6,21 @@ This is an independent project and isn't affiliated with or endorsed by YouTube 
 
 ## Download and install (Windows)
 
-1. Open this project's **Releases** page (link on the right side of the GitHub page) and download `StreamTimestamper-vX.Y.Z-windows.zip`. Only download it from there. Your browser may warn about the download ("not commonly downloaded" or "contains a virus or malware"), because security tools haven't seen this new, unsigned app before. If you got it from the Releases page, choose **Keep** / **Download anyway**. You can scan the zip with Windows Security/Defender or VirusTotal first to be sure.
+1. Open this project's **Releases** page (link on the right side of the GitHub page) and download `StreamTimestamper-vX.Y.Z-windows.zip`. Only download it from there. Your browser may warn about the download ("not commonly downloaded" or "contains a virus or malware"), because security tools haven't seen this new, unsigned app before. If you got it from the Releases page, choose **Keep** / **Download anyway**. You can scan the zip with Windows Security or VirusTotal first.
 2. OPTIONAL hash check: in PowerShell run `Get-FileHash .\StreamTimestamper-vX.Y.Z-windows.zip` and compare the result with the text in the `.sha256` file on the same release page. They must match.
 3. Unzip the whole folder somewhere (not inside the zip) and run `StreamTimestamper.exe`. Windows may show a blue "Windows protected your PC" warning, because this is a new app that isn't code-signed (certificates cost money). If you downloaded it from the Releases page, click **More info → Run anyway**. Never turn off your antivirus for any app. Technical users can also confirm GitHub built the file from this source: `gh attestation verify <the zip> -R <owner>/<repo>`.
 4. The setup wizard opens on first launch. It covers the Gemini API key, how the app keeps your channel safe, the output folder, and a short guide to tuning the prompt.
 5. **Prompt** page: pick a preset and describe what to find. Then click **Save as my preset** and tick **Start with this preset**.
 6. **Run** page: paste stream, playlist or channel links, *or* add caption files. Then press **Start**.
 7. **Results** page: read and copy the output, or open the output folder.
+8. When the app says a new version is available, download it the same way, delete the old app folder and unzip the new one. Your settings, presets and results are kept.
+
+## Getting help
+
+- Email: streamtimestamper.help@protonmail.com
+- Or open an issue on this project's **Issues** tab (needs a free GitHub account).
+
+Please include the version number (bottom of the left sidebar), what you clicked, and a screenshot of the Activity log on the Run page. Never send your Gemini API key or your settings file. Nobody needs them to help you, and I will never ask for them.
 
 ## Account safety
 
@@ -36,7 +44,7 @@ Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replac
 
 ## Security
 
-**What the app connects to:** YouTube (logged out) and Google's Gemini API. Nothing else: no telemetry, no update check, no other servers.
+**What the app connects to:** YouTube (logged out), Google's Gemini API, and GitHub once a day to see whether a newer version exists (Settings → App, untick "Tell me when a new version is out" to stop it). Nothing else: no telemetry, no other servers. The update check only reads the newest version number; the app never downloads or installs anything by itself.
 
 **What's locked down**
 
@@ -91,5 +99,6 @@ python -m unittest discover -s tests -v      (logic: no extra packages needed)
 | `core.py` | Links (logged-out yt-dlp) or caption files → Gemini → file. No GUI |
 | `prompt_builder.py` | Turns the Prompt page form into AI instructions; built-in presets |
 | `settings.py` | settings.json load/save; encrypts the API key |
-| `version.py` | App version |
+| `version.py` | App version (the GitHub build adds the repo name for update checks) |
+| `updates.py` | Once-a-day "new version available" check against GitHub Releases |
 | `assets/` | `icon.ico`, `icon.png`, and `make_icon.py` to rebuild them |

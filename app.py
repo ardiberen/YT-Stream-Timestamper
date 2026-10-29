@@ -21,6 +21,8 @@ import core  # noqa: E402
 import prompt_builder as pb  # noqa: E402
 import settings as store  # noqa: E402
 import ui_common as ui  # noqa: E402
+import updates  # noqa: E402
+from version import GITHUB_REPO  # noqa: E402
 from wizard import CaptionFileHelp, SetupWizard  # noqa: E402
 
 APP_NAME = ui.APP_NAME
@@ -72,6 +74,7 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         if not self.s.get("setup_done"):
             self.after(600, self.open_wizard)
+        self.after(1500, self._startup_update_check)
 
     # ================================================================== variables
     def _init_vars(self):
@@ -92,6 +95,7 @@ class App(ctk.CTk):
         self.v_skip = bv(value=s["skip_existing"])
         self.v_raw = bv(value=s["save_transcript"])
         self.v_appearance = sv(value=str(s.get("appearance", "System")).capitalize())
+        self.v_check_updates = bv(value=bool(s.get("check_updates", True)))
         self.v_preset = sv(value=NO_PRESET)
         self.v_is_default = bv(value=False)
         self.v_show_key = bv(value=False)
@@ -504,7 +508,20 @@ class App(ctk.CTk):
         ui.button(af, "Open settings folder", lambda: ui.open_path(str(store.app_dir())),
                   kind="secondary").pack(side="left", padx=10)
         r = srow(i, r, "Setup", af)
-        srow(i, r, "Version", ui.label(i, ui.VERSION, 14, color=ui.MUTED))
+        r = srow(i, r, "Version", ui.label(i, ui.VERSION, 14, color=ui.MUTED))
+        if updates.repo_ok(GITHUB_REPO):
+            uf = ctk.CTkFrame(i, fg_color="transparent")
+            ctk.CTkCheckBox(uf, text="Tell me when a new version is out", variable=self.v_check_updates,
+                            font=ui.font(13)).pack(side="left")
+            ui.button(uf, "Check now", lambda: self.check_updates(manual=True), kind="secondary",
+                      width=110).pack(side="left", padx=12)
+            r = srow(i, r, "Updates", uf, "Checks GitHub once a day for a newer version and shows a link. It never "
+                                           "downloads or installs anything by itself.")
+            ui.button(i, "Help & report a problem", lambda: ui.open_url(updates.help_page(GITHUB_REPO)),
+                      kind="secondary").grid(row=r, column=1, sticky="w", pady=(10, 0))
+        else:
+            srow(i, r, "Updates", ui.hint(i, "Update notices are only in copies downloaded from the project's "
+                                             "GitHub Releases page."))
 
     def _with_unit(self, parent, var, unit):
         f = ctk.CTkFrame(parent, fg_color="transparent")
@@ -536,7 +553,9 @@ class App(ctk.CTk):
             self.links_off_lbl.grid_remove()
         self.side_safe.configure(text="●  YouTube: never contacted" if on else "●  YouTube: no login used")
 
-    def show_banner(self, text: str, kind: str = "warn", button: str | None = None, command=None):
+    def show_banner(self, text: str, kind: str = "warn", button: str | None = None, command=None,
+                    is_update: bool = False):
+        self._banner_visible, self._banner_is_update = True, is_update
         self.banner.configure(fg_color={"error": ui.BANNER_ERROR, "warn": ui.BANNER_WARN}.get(kind, ui.CARD_BG))
         self.banner_lbl.configure(text=text)
         if button and command:
@@ -547,6 +566,7 @@ class App(ctk.CTk):
         self.banner.grid()
 
     def hide_banner(self):
+        self._banner_visible = False
         self.banner.grid_remove()
 
     # ================================================================== caption files
@@ -624,6 +644,7 @@ class App(ctk.CTk):
         s["save_transcript"] = bool(self.v_raw.get())
         s["appearance"] = self.v_appearance.get()
         s["files_only"] = bool(self.v_files_only.get())
+        s["check_updates"] = bool(self.v_check_updates.get())
         adv = bool(self.v_adv.get())
         s["prompt_mode"] = "advanced" if adv else "guided"
         s["form"] = self.get_form()
@@ -999,6 +1020,58 @@ class App(ctk.CTk):
         self.log_box.see("end")
         self.log_box.configure(state="disabled")
 
+    # ================================================================== update notice
+    def _startup_update_check(self):
+        if not updates.repo_ok(GITHUB_REPO) or not self.s.get("check_updates", True):
+            return
+        newer = updates.parse_version(self.s.get("update_available"))
+        cur = updates.parse_version(ui.VERSION)
+        if newer and cur and newer > cur:
+            self._show_update_banner(updates.fmt_version(newer))  # remembered from an earlier check
+        elif self.s.get("update_available"):
+            self.s["update_available"] = ""  # already updated
+        if updates.is_due(self.s.get("last_update_check")):
+            self.check_updates(manual=False)
+
+    def check_updates(self, manual: bool = False):
+        if not updates.repo_ok(GITHUB_REPO):
+            return
+        if manual:
+            self.status_lbl.configure(text="Checking for a new version ...")
+
+        def work():
+            status, version = updates.check(GITHUB_REPO, ui.VERSION)
+            self.q.put(("update", status, version, manual))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update_result(self, status: str, version, manual: bool):
+        if status != "failed":
+            self.s["last_update_check"] = time.time()
+        if status == "newer" and version:
+            self.s["update_available"] = version
+            self._show_update_banner(version)
+        elif status == "current":
+            self.s["update_available"] = ""
+        if manual:
+            self.status_lbl.configure(text="Ready.")
+            if status == "newer":
+                if messagebox.askyesno(APP_NAME, f"Version {version} is available (you have {ui.VERSION}).\n\n"
+                                                 "Open the download page?"):
+                    ui.open_url(updates.releases_page(GITHUB_REPO))
+            elif status == "current":
+                messagebox.showinfo(APP_NAME, f"You have the newest version ({ui.VERSION}).")
+            else:
+                messagebox.showwarning(APP_NAME, "Couldn't reach GitHub to check. Try again later.")
+
+    def _show_update_banner(self, version: str):
+        if getattr(self, "_banner_visible", False) and not getattr(self, "_banner_is_update", False):
+            return  # don't cover a more important message (e.g. a YouTube block warning)
+        self.show_banner(f"Stream Timestamper {version} is available (you have {ui.VERSION}). Download it from the "
+                         "project's Releases page, then replace your app folder. Your settings are kept.", "info",
+                         "Open download page", lambda: ui.open_url(updates.releases_page(GITHUB_REPO)),
+                         is_update=True)
+
     def _poll(self):
         try:
             while True:
@@ -1016,6 +1089,8 @@ class App(ctk.CTk):
                     (messagebox.showinfo if item[1] else messagebox.showerror)(APP_NAME, item[2])
                 elif kind == "finished":
                     self._on_finished(item[1])
+                elif kind == "update":
+                    self._on_update_result(item[1], item[2], item[3])
         except queue.Empty:
             pass
         self.after(100, self._poll)

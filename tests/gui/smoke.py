@@ -56,7 +56,12 @@ core.Runner._fetch_info = fake_fetch
 _orig_sleep = core.Runner._sleep
 core.Runner._sleep = lambda self, s: self._check_stop()
 
+import updates
+UPD = {"result": ("current", None)}
+updates.check = lambda repo, cur: UPD["result"]
+
 import app as appmod
+appmod.GITHUB_REPO = "tester/stream-timestamper"  # as if built by GitHub
 
 print("1. first launch")
 a = appmod.App()
@@ -81,6 +86,8 @@ check(w._key() == "output", "-> output step")
 w.next_btn.invoke()
 w.next_btn.invoke()
 check(a.wizard is None and a.s["setup_done"], "wizard finished")
+check(pump(lambda: a.s["last_update_check"] > 0), "startup update check ran (up to date)")
+check(not a.banner.gridded, "no update banner when up to date")
 
 print("2. prompt chapters option")
 a.fv["chapters"].set(True)
@@ -151,4 +158,33 @@ check(saved["max_per_run"] == 15, "settings saved")
 b = appmod.App()
 pump()
 check(b.wizard is None and not b.banner.gridded, "no wizard or banner on second launch")
+print("9. update notice")
+UPD["result"] = ("newer", "9.9.9")
+messagebox.ANSWERS["askyesno"] = False
+messagebox.CALLS.clear()
+b.check_updates(manual=True)
+check(pump(lambda: b.s["update_available"] == "9.9.9"), "manual check found 9.9.9")
+check(b.banner.gridded and "9.9.9 is available" in b.banner_lbl.kw["text"], "update banner shown")
+check(any(k == "askyesno" for k, _ in messagebox.CALLS), "asked whether to open the download page")
+b.show_banner("YouTube is limiting requests from your internet connection", "error")
+b._show_update_banner("9.9.9")
+check("YouTube is limiting" in b.banner_lbl.kw["text"], "update notice doesn't cover a block warning")
+b._on_close()
+UPD["result"] = ("failed", None)
+c = appmod.App()
+pump(lambda: c.banner.gridded, timeout=3)
+check(c.banner.gridded and "9.9.9" in c.banner_lbl.kw["text"], "remembered update shown on next launch")
+c.v_check_updates.set(False)
+c._on_close()
+d = appmod.App()
+pump(timeout=2)
+check(not d.banner.gridded, "no notice when update checks are turned off")
+appmod.GITHUB_REPO = ""
+UPD["result"] = ("newer", "8.8.8")
+e = appmod.App()
+before = e.s["last_update_check"]
+e.check_updates(manual=True)
+pump(timeout=2)
+check(e.s["last_update_check"] == before and e.s["update_available"] != "8.8.8",
+      "local build (no repo): starts fine, never checks")
 print("\nALL SMOKE CHECKS PASSED")
