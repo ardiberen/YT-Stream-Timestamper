@@ -970,5 +970,44 @@ class ResultsListTests(unittest.TestCase):
             self.assertEqual(core.list_results(os.path.join(d, "missing")), [])
 
 
+class VersionInfoTests(unittest.TestCase):
+    """The exe's Windows 'Details' data is generated from version.py; make sure it stays valid."""
+
+    def _load(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "assets"))
+        try:
+            import make_version_info as mvi
+        finally:
+            sys.path.pop(0)
+        return mvi
+
+    def test_text_parses_and_matches_version(self):
+        mvi = self._load()
+        seen = {}
+
+        class Rec:
+            def __init__(self, *a, **kw):
+                self.a, self.kw = a, kw
+
+        def struct(k, v):
+            seen[k] = v
+            return Rec()
+
+        env = {n: Rec for n in ("VSVersionInfo", "FixedFileInfo", "StringFileInfo", "StringTable",
+                                "VarFileInfo", "VarStruct")}
+        env["StringStruct"] = struct
+        ffi = eval(mvi.build_text("1.2.3"), {"__builtins__": {}}, env).kw["ffi"]
+        self.assertEqual(ffi.kw["filevers"], (1, 2, 3, 0))
+        self.assertEqual(seen["FileVersion"], "1.2.3.0")
+        self.assertEqual(seen["ProductName"], "Stream Timestamper")
+        self.assertEqual(seen["OriginalFilename"], "StreamTimestamper.exe")
+
+    def test_version_tuple(self):
+        mvi = self._load()
+        self.assertEqual(mvi.version_tuple("0.7.0"), (0, 7, 0, 0))
+        self.assertEqual(mvi.version_tuple("0.7"), (0, 7, 0, 0))
+        self.assertEqual(mvi.build_text().count(version.APP_VERSION), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

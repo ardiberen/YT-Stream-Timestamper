@@ -4,9 +4,37 @@ Reads the captions of YouTube streams, has Gemini find the segments you care abo
 
 This is an independent project and isn't affiliated with or endorsed by YouTube or Google. It uses the open-source yt-dlp library.
 
+## Is it safe?
+
+Fair question, since this is a free app from someone you don't know yet. You don't have to take my word for it:
+
+**What it does and doesn't do**
+
+- It's free and open source (MIT license). Every line of the program is in this repository.
+- It never asks for your YouTube or Google password and never uses cookies or browser data.
+- It connects only to YouTube (logged out), Google's Gemini service (with your own Gemini key) and GitHub (once a day, to read the newest version number). No telemetry, no ads, no account with me.
+- It needs no installer and no administrator rights. It doesn't add itself to Windows startup, doesn't change the registry, and doesn't keep running after you close it. Its files are the app folder you unzip and `%APPDATA%\StreamTimestamper` (settings and logs).
+- Your Gemini key stays on your PC, encrypted with your Windows login.
+
+**How the download is made**
+
+- The zip on the Releases page is built by GitHub's servers from the public code, not on my computer, after the automated tests pass. GitHub also records that (a "build attestation"), so the file can be checked against this source.
+- Each release lists two SHA-256 checksums: one for the zip (`.sha256`) and one for `StreamTimestamper.exe` (`-exe.sha256`). Also on the release page: `build-versions.txt`, the exact list of libraries that went into the build.
+- Right-click `StreamTimestamper.exe` → **Properties → Details** to see the product name and version it was built with.
+
+**Check it yourself (pick any)**
+
+1. Compare the zip's hash with the `.sha256` file (see step 2 below).
+2. Paste the exe's hash from the `-exe.sha256` file into the search box on virustotal.com. That shows the scan report for that exact file without uploading anything.
+3. Run `gh attestation verify <the zip> -R ardiberen/YT-Stream-Timestamper` (needs the free GitHub CLI) to confirm GitHub built it from this repository.
+4. Build it yourself from the source (see "Build the exe" below) and compare. Or just read the code. `core.py` is the engine, and it has no GUI code.
+5. Open Windows Resource Monitor → Network while it runs to see the only places it connects to.
+
+**About antivirus warnings:** this app is free and not code-signed (certificates cost money), and it's packaged with PyInstaller, which is common for Python apps. Unsigned apps like that are sometimes flagged by a few lesser-known engines on VirusTotal with generic labels (like "Malware", "Unsafe" or "BehavesLike"). Those are guesses based on how a file looks, not matches for a known virus. When I scan the release, Microsoft Defender and the large engines (Kaspersky, ESET, Bitdefender, Sophos, CrowdStrike and others) report nothing. If you're unsure, check the hashes as above, or email me and I'll help. Never turn off your antivirus for any app.
+
 ## Download and install (Windows)
 
-1. Open this project's **Releases** page (link on the right side of the GitHub page) and download `StreamTimestamper-vX.Y.Z-windows.zip`. Only download it from there. Your browser may warn about the download ("not commonly downloaded" or "contains a virus or malware"), because security tools haven't seen this new, unsigned app before. If you got it from the Releases page, choose **Keep** / **Download anyway**. You can scan the zip with Windows Security or VirusTotal first.
+1. Open this project's **Releases** page (link on the right side of the GitHub page) and download `StreamTimestamper-vX.Y.Z-windows.zip`. Only download it from there. Your browser may warn about the download ("not commonly downloaded" or "contains a virus or malware"), because security tools haven't seen this new, unsigned app before. If you got it from the Releases page, choose **Keep** / **Download anyway**. You can scan the zip with Windows Security or VirusTotal first (see "Is it safe?" above for what to expect).
 2. OPTIONAL hash check: in PowerShell run `Get-FileHash .\StreamTimestamper-vX.Y.Z-windows.zip` and compare the result with the text in the `.sha256` file on the same release page. They must match.
 3. Unzip the whole folder somewhere (not inside the zip) and run `StreamTimestamper.exe`. Windows may show a blue "Windows protected your PC" warning, because this is a new app that isn't code-signed (certificates cost money). If you downloaded it from the Releases page, click **More info → Run anyway**. Never turn off your antivirus for any app. Technical users can also confirm GitHub built the file from this source: `gh attestation verify <the zip> -R ardiberen/YT-Stream-Timestamper`.
 4. The setup wizard opens on first launch. It covers the Gemini API key, how the app keeps your channel safe, the output folder, and a short guide to tuning the prompt.
@@ -107,4 +135,4 @@ python -m unittest discover -s tests -v      (logic: no extra packages needed)
 | `updates.py` | Once-a-day "new version available" check against GitHub Releases |
 | `net_ssl.py` | Certificate settings for the app's own HTTPS requests (Windows store + bundled list) |
 | `runlog.py` | Saves each run's Activity log to a file (last 10 kept) |
-| `assets/` | `icon.ico`, `icon.png`, and `make_icon.py` to rebuild them |
+| `assets/` | `icon.ico`, `icon.png`, `make_icon.py` to rebuild them, and `make_version_info.py` (writes the exe's Properties → Details data) |

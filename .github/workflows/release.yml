@@ -65,9 +65,10 @@ jobs:
       - name: Build the app
         shell: pwsh
         run: |
+          python assets/make_version_info.py
           $deno = (Get-Command deno).Source
           pyinstaller --noconfirm --clean --windowed --onedir --name StreamTimestamper `
-            --icon assets\icon.ico --add-data "assets;assets" `
+            --icon assets\icon.ico --version-file version_info.txt --add-data "assets;assets" `
             --collect-all customtkinter --collect-all yt_dlp --collect-all yt_dlp_ejs `
             --collect-all google.genai --collect-all certifi `
             --add-binary "$deno;." app.py
@@ -80,6 +81,12 @@ jobs:
           Compress-Archive -Path dist\StreamTimestamper -DestinationPath $zip
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
           "$hash  $zip" | Out-File -Encoding ascii "$zip.sha256"
+          # hash of the exe itself, for people who scan StreamTimestamper.exe (e.g. on VirusTotal) after unzipping
+          $exe = "StreamTimestamper-v$env:VERSION-exe.sha256"
+          $exeHash = (Get-FileHash dist\StreamTimestamper\StreamTimestamper.exe -Algorithm SHA256).Hash.ToLower()
+          "$exeHash  StreamTimestamper.exe" | Out-File -Encoding ascii $exe
+          "EXE_SHA=$exe" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          "exe SHA-256: $exeHash" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
           "ZIP=$zip" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
           "SHA-256: $hash" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
@@ -94,7 +101,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$env:TAG" "${env:ZIP}" "${env:ZIP}.sha256" build-versions.txt --clobber
+        run: gh release upload "$env:TAG" "${env:ZIP}" "${env:ZIP}.sha256" "${env:EXE_SHA}" build-versions.txt --clobber
 
       - name: Keep files from a test run
         if: github.event_name != 'release'
@@ -104,4 +111,5 @@ jobs:
           path: |
             ${{ env.ZIP }}
             ${{ env.ZIP }}.sha256
+            ${{ env.EXE_SHA }}
             build-versions.txt

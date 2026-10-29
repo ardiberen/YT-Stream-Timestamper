@@ -19,3 +19,4 @@ cookies*.txt
 # release files
 *.zip
 *.sha256
+version_info.txt

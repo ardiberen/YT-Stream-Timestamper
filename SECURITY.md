@@ -21,4 +21,10 @@ Details are in the **Security** section of [README.md](README.md).
 
 Only download releases from this repository's **Releases** page. Each release includes a SHA-256 checksum file
 and a build attestation proving the file was built by GitHub from the public source code.
+Each release has two checksums (one for the zip, one for `StreamTimestamper.exe`) so either file can be checked
+or looked up on VirusTotal by hash. The exe carries its product name and version in Properties → Details.
+
+Antivirus engines sometimes flag unsigned, PyInstaller-packaged apps with generic labels. If a scan flags the
+file, compare the hashes, and report it to the address in the README. False alarms are reported to the
+antivirus vendor. The app contains no code that edits the registry, adds itself to startup, or runs shell commands.
 The author will never send the program by email attachment and will never ask you to turn off antivirus.

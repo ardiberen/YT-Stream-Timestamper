@@ -31,11 +31,15 @@ if not defined DENO_ARG (
   echo.
 )
 
+REM Windows "Details" tab info (name, version, description) for the exe
+python assets\make_version_info.py || exit /b 1
+
 set MODE=--onedir
 if /i "%1"=="onefile" set MODE=--onefile
 
 pyinstaller --noconfirm --clean --windowed %MODE% --name StreamTimestamper ^
   --icon assets\icon.ico ^
+  --version-file version_info.txt ^
   --add-data "assets;assets" ^
   --collect-all customtkinter ^
   --collect-all yt_dlp ^
