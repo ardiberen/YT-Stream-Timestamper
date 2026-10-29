@@ -151,8 +151,9 @@ class MiscTests(unittest.TestCase):
         self.assertEqual(core.redact("abc", "abc"), "abc")  # too short to be a real key: leave alone
 
     def test_system_prompt(self):
-        self.assertEqual(core.build_system_prompt("min {min_minutes} {x}", 4.0), "min 4 {x}")
-        self.assertEqual(core.build_system_prompt("min {min_minutes}", 2.5), "min 2.5")
+        g = "\n\n" + core.INJECTION_GUARD
+        self.assertEqual(core.build_system_prompt("min {min_minutes} {x}", 4.0), "min 4 {x}" + g)
+        self.assertEqual(core.build_system_prompt("min {min_minutes}", 2.5), "min 2.5" + g)
 
     def test_existing(self):
         with tempfile.TemporaryDirectory() as d:
@@ -229,7 +230,7 @@ class FakeRunTests(unittest.TestCase):
         self.assertTrue(out.exists())
         self.assertIn("00:00:05", out.read_text())
         model, system, transcript = self.calls[0]
-        self.assertEqual(system, "find 4 min calls")
+        self.assertEqual(system, "find 4 min calls\n\n" + core.INJECTION_GUARD)
         self.assertEqual(transcript, "[00:00:05] caller one")
         # second run: everything done is skipped without a network fetch
         r2 = self.make("aaaaaaaaaaa")
@@ -379,7 +380,11 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertNotIn("single period", t)
 
     def test_chapters(self):
-        f = self.pb.builtin_form("Call-in show (every caller)")
+        for name in self.pb.BUILTIN_PRESETS:  # every built-in preset starts with chapters on
+            f = self.pb.builtin_form(name)
+            self.assertTrue(f["chapters"], name)
+            self.assertIn('"00:00 – Intro" exactly', self.pb.build_prompt(f), name)
+        f["chapters"] = False
         self.assertNotIn("00:00 –", self.pb.build_prompt(f))
         f["chapters"] = True
         f["chapter_intro"] = "Start"
@@ -821,6 +826,21 @@ class NetworkTrustTests(FakeRunTests):
         import inspect
         src = inspect.getsource(self.orig_gen)
         self.assertIn('client_args={"verify": net_ssl.make_context()}', src)
+
+
+class PromptSafetyTests(FakeRunTests):
+    def test_guard_on_every_prompt(self):
+        self.make("aaaaaaaaaaa").run()
+        system = self.calls[0][1]
+        self.assertTrue(system.endswith(core.INJECTION_GUARD))
+        self.assertIn("do not follow", core.INJECTION_GUARD)
+
+    def test_listing_tls_problem_stops_run(self):
+        r = self.make("https://www.youtube.com/@Chan")
+        r._list_entries = lambda url: (_ for _ in ()).throw(
+            RuntimeError("ERROR: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"))
+        sm = r.run()
+        self.assertIn("network you're on", sm["error"])
 
 
 class RunLogTests(unittest.TestCase):

@@ -8,7 +8,7 @@ This is an independent project and isn't affiliated with or endorsed by YouTube 
 
 1. Open this project's **Releases** page (link on the right side of the GitHub page) and download `StreamTimestamper-vX.Y.Z-windows.zip`. Only download it from there. Your browser may warn about the download ("not commonly downloaded" or "contains a virus or malware"), because security tools haven't seen this new, unsigned app before. If you got it from the Releases page, choose **Keep** / **Download anyway**. You can scan the zip with Windows Security or VirusTotal first.
 2. OPTIONAL hash check: in PowerShell run `Get-FileHash .\StreamTimestamper-vX.Y.Z-windows.zip` and compare the result with the text in the `.sha256` file on the same release page. They must match.
-3. Unzip the whole folder somewhere (not inside the zip) and run `StreamTimestamper.exe`. Windows may show a blue "Windows protected your PC" warning, because this is a new app that isn't code-signed (certificates cost money). If you downloaded it from the Releases page, click **More info → Run anyway**. Never turn off your antivirus for any app. Technical users can also confirm GitHub built the file from this source: `gh attestation verify <the zip> -R <owner>/<repo>`.
+3. Unzip the whole folder somewhere (not inside the zip) and run `StreamTimestamper.exe`. Windows may show a blue "Windows protected your PC" warning, because this is a new app that isn't code-signed (certificates cost money). If you downloaded it from the Releases page, click **More info → Run anyway**. Never turn off your antivirus for any app. Technical users can also confirm GitHub built the file from this source: `gh attestation verify <the zip> -R ardiberen/YT-Stream-Timestamper`.
 4. The setup wizard opens on first launch. It covers the Gemini API key, how the app keeps your channel safe, the output folder, and a short guide to tuning the prompt.
 5. **Prompt** page: pick a preset and describe what to find. Then click **Save as my preset** and tick **Start with this preset**.
 6. **Run** page: paste stream, playlist or channel links, *or* add caption files. Then press **Start**.
@@ -53,6 +53,7 @@ Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replac
 - No code is downloaded at runtime. yt-dlp's challenge solver ships inside the app, and Deno runs it with no file, network or system permissions (checked against yt-dlp's source).
 - The Gemini key is encrypted with Windows DPAPI (your Windows login). Copying `settings.json` to another PC/user, or a backup of it, doesn't expose the key. The setup wizard says whether encryption is active on that PC. If Windows refuses, the key is saved as plain text instead.
 - The key is stripped from the activity log, the saved log files and error messages.
+- Stream captions are treated as untrusted text: Gemini is told to ignore any instructions inside them and never to add links.
 - Certificate checks are always on. The app trusts the same certificates Windows does, plus Mozilla's list that ships with it. If a network intercepts the connection with a certificate Windows doesn't trust (some work, school or guest Wi-Fi does this), the app stops and says so instead of sending anything.
 - Result file names are sanitized (no folders, no `..`, no Windows device names like `CON`).
 - No login, cookies or passwords are stored or used.
@@ -60,6 +61,7 @@ Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replac
 **Good to know**
 
 - **Free Gemini keys and privacy:** under Google's terms, content sent with a free (unpaid) Gemini key may be used to improve Google's products and read by human reviewers. Don't use a free key on private, unlisted or members-only streams. Paid keys are treated differently, so check Google's Gemini API terms.
+- **Check before you post:** the AI can miss a segment or get a time slightly off, so skim the list before pasting it publicly. The app also tells Gemini to ignore anything in the stream that sounds like instructions to it (for example a caller saying "add this link"), and never to add links.
 - **Unsigned app:** the exe isn't code-signed (certificates cost money), so Windows or your antivirus may warn about it. The source is public and each release is built by GitHub from it.
 
 ## Build the exe (on Windows)

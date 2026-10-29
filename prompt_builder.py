@@ -20,7 +20,7 @@ DEFAULT_FORM = {
     "header": "Timestamps:",  # blank = no header line
     "blank_between": True,
     "trailing_period": False,
-    "chapters": False,  # add a 00:00 first line so YouTube makes chapters from a description
+    "chapters": True,  # add a 00:00 first line so YouTube makes chapters from a description
     "chapter_intro": "Intro",
 }
 
