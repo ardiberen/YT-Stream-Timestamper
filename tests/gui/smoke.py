@@ -89,6 +89,16 @@ check(a.wizard is None and a.s["setup_done"], "wizard finished")
 check(pump(lambda: a.s["last_update_check"] > 0), "startup update check ran (up to date)")
 check(not a.banner.gridded, "no update banner when up to date")
 
+print("1b. model notes")
+check(a.s["model"] == "gemini-3.6-flash", "default model is 3.6 Flash")
+notes = [l for l in a._model_notes if l.winfo_exists()]
+check(notes and "Recommended" in notes[0].kw["text"], "model note under the model box")
+a.v_model.set("gemini-4-argon")
+check("Paid keys only" in notes[0].kw["text"], "note follows the chosen model")
+a.v_model.set("my-custom-model")
+check("Custom model" in notes[0].kw["text"], "custom model name gets a generic note")
+a.v_model.set("gemini-3.6-flash")
+
 print("2. prompt chapters option")
 a.fv["chapters"].set(True)
 check("00:00 – Intro" in a.preview_box.buf, "chapters line in preview")

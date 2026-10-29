@@ -41,6 +41,25 @@ class ApiKeyProblem(Exception):
     """Gemini rejected the API key."""
 
 
+class GeminiDailyLimit(Exception):
+    """The Gemini key has used up today's requests for this model."""
+
+
+GEMINI_DAILY_MSG = ("Gemini's daily limit for {model} on this API key has been reached, so the run was stopped. "
+                    "Free keys get a small number of requests per model each day; the count resets at midnight "
+                    "Pacific time. Try again after that, pick a different model in Settings (each model has its own "
+                    "daily limit), or use a paid key. If this happened on the very first stream, this model may not "
+                    "be available with free keys.")
+# Google's 429 errors name the quota that was hit, e.g. "GenerateRequestsPerDayPerProjectPerModel-FreeTier".
+_DAILY_QUOTA_RE = re.compile(r"PerDay", re.I)
+_MINUTE_QUOTA_RE = re.compile(r"PerMinute", re.I)
+
+
+def is_daily_quota(msg: str) -> bool:
+    return bool(_DAILY_QUOTA_RE.search(msg or "")) and bool(re.search(r"429|RESOURCE_EXHAUSTED|quota", msg or "",
+                                                                       re.I))
+
+
 class NetworkTrustProblem(Exception):
     """A secure (HTTPS) connection couldn't be verified: usually a network that inspects or blocks traffic."""
 
@@ -454,6 +473,9 @@ def test_api_key(api_key: str, model: str) -> tuple[bool, str]:
             return False, TLS_PROBLEM_MSG.format(what="Google's Gemini")
         if KEY_RE.search(msg):
             return False, "Gemini rejected this API key."
+        if is_daily_quota(msg):
+            return False, (f"The key looks valid, but {model} has hit its daily limit (or isn't available with "
+                           "free keys). Try another model, or try again after midnight Pacific time.")
         if "404" in msg or "NOT_FOUND" in msg:
             return False, f"Model '{model}' was not found. Pick another model."
         return False, f"Failed: {redact(msg, api_key)[:200]}"
@@ -744,6 +766,7 @@ class Runner:
     def _ask_gemini(self, transcript: str) -> Optional[str]:
         """The answer text, or None if the request failed (the reason is already logged)."""
         system = build_system_prompt(self.cfg.prompt, self.cfg.min_segment_minutes)
+        daily_checked = False
         for attempt in range(1, self.cfg.max_retries + 1):
             self._check_stop()
             try:
@@ -754,6 +777,17 @@ class Runner:
                     raise NetworkTrustProblem(TLS_PROBLEM_MSG.format(what="Google's Gemini"))
                 if KEY_RE.search(msg):
                     raise ApiKeyProblem(msg)
+                if is_daily_quota(msg):
+                    # Google sometimes lists the per-minute and per-day quotas together; wait a minute once to
+                    # tell them apart. Still blocked after that = the daily limit, so stop instead of failing
+                    # every remaining stream.
+                    if _MINUTE_QUOTA_RE.search(msg) and not daily_checked and attempt < self.cfg.max_retries:
+                        daily_checked = True
+                        self.log("Gemini says a usage limit was reached. Waiting a minute to see whether it's the "
+                                 "per-minute or the daily limit ...", "warn")
+                        self._sleep(65)
+                        continue
+                    raise GeminiDailyLimit(GEMINI_DAILY_MSG.format(model=self.cfg.model))
                 if RETRYABLE_RE.search(msg) and attempt < self.cfg.max_retries:
                     wait = attempt * (20 if "429" in msg or "RESOURCE_EXHAUSTED" in msg else 10)
                     self.log(f"Gemini busy (attempt {attempt}/{self.cfg.max_retries}). Retrying in {wait}s ...", "warn")
@@ -796,7 +830,7 @@ class Runner:
                         status = self._process_file(target)
                     else:
                         status, touched = self._process_video(key, target)
-                except (StopRequested, YouTubeBlocked, ApiKeyProblem, NetworkTrustProblem):
+                except (StopRequested, YouTubeBlocked, ApiKeyProblem, NetworkTrustProblem, GeminiDailyLimit):
                     raise
                 except Exception as e:  # noqa: BLE001
                     self.log(f"{key}: unexpected error: {e}", "error")

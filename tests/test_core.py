@@ -176,7 +176,7 @@ class MiscTests(unittest.TestCase):
             self.assertNotIn("unknown_key", s2)
             p.write_text("{not json")
             s3 = settings.load(p)
-            self.assertEqual(s3["model"], "gemini-3.8-flash")
+            self.assertEqual(s3["model"], "gemini-3.6-flash")
             self.assertTrue(p.with_suffix(".bad").exists())
 
 
@@ -841,6 +841,77 @@ class PromptSafetyTests(FakeRunTests):
             RuntimeError("ERROR: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"))
         sm = r.run()
         self.assertIn("network you're on", sm["error"])
+
+
+class GeminiDailyLimitTests(FakeRunTests):
+    DAY = ('429 RESOURCE_EXHAUSTED. You exceeded your current quota. '
+           "quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier'")
+    BOTH = DAY + " quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier'"
+    MINUTE = "429 RESOURCE_EXHAUSTED quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier'"
+
+    def test_detection(self):
+        self.assertTrue(core.is_daily_quota(self.DAY))
+        self.assertTrue(core.is_daily_quota(self.BOTH))
+        self.assertFalse(core.is_daily_quota(self.MINUTE))
+        self.assertFalse(core.is_daily_quota("503 UNAVAILABLE overloaded"))
+
+    def test_daily_limit_stops_run_once(self):
+        calls = []
+
+        def gen(*a):
+            calls.append(1)
+            raise RuntimeError(self.DAY)
+        core.generate = gen
+        sm = self.make("aaaaaaaaaaa\nhttps://youtu.be/aaaaaaaaaaa").run()
+        self.assertEqual(len(calls), 1)  # no retries, no second stream
+        self.assertIn("daily limit for m", sm["error"])
+        self.assertIn("midnight Pacific", sm["error"])
+
+    def test_minute_and_day_listed_waits_once_then_continues(self):
+        calls = []
+
+        def gen(*a):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError(self.BOTH)
+            return "Timestamps:\n00:00:05 - A\n"
+        core.generate = gen
+        sm = self.make("aaaaaaaaaaa").run()
+        self.assertEqual((len(calls), sm["done"]), (2, 1))
+        self.assertTrue(any("per-minute or the daily" in m for _, m in self.logs))
+
+    def test_minute_and_day_twice_means_daily(self):
+        calls = []
+
+        def gen(*a):
+            calls.append(1)
+            raise RuntimeError(self.BOTH)
+        core.generate = gen
+        sm = self.make("aaaaaaaaaaa").run()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("daily limit", sm["error"])
+
+    def test_per_minute_still_retried(self):
+        calls = []
+
+        def gen(*a):
+            calls.append(1)
+            if len(calls) < 3:
+                raise RuntimeError(self.MINUTE)
+            return "ok text"
+        core.generate = gen
+        sm = self.make("aaaaaaaaaaa").run()
+        self.assertEqual((len(calls), sm["done"]), (3, 1))
+
+    def test_key_test_message(self):
+        orig = core.generate
+        core.generate = lambda *a: (_ for _ in ()).throw(RuntimeError(self.DAY))
+        try:
+            ok, msg = core.test_api_key("k", "gemini-3.8-flash")
+        finally:
+            core.generate = orig
+        self.assertFalse(ok)
+        self.assertIn("daily limit", msg)
 
 
 class RunLogTests(unittest.TestCase):

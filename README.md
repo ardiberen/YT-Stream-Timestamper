@@ -61,6 +61,7 @@ Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replac
 **Good to know**
 
 - **Free Gemini keys and privacy:** under Google's terms, content sent with a free (unpaid) Gemini key may be used to improve Google's products and read by human reviewers. Don't use a free key on private, unlisted or members-only streams. Paid keys are treated differently, so check Google's Gemini API terms.
+- **Which AI model:** Gemini 3.6 Flash (the default) works well with free keys. Free keys only get a small number of requests per model each day (the count resets at midnight Pacific time). If a model runs out, the app stops and says so; you can switch models in Settings, since each has its own daily limit. Gemini 4 Argon needs a paid key. Settings shows a short note for each model.
 - **Check before you post:** the AI can miss a segment or get a time slightly off, so skim the list before pasting it publicly. The app also tells Gemini to ignore anything in the stream that sounds like instructions to it (for example a caller saying "add this link"), and never to add links.
 - **Unsigned app:** the exe isn't code-signed (certificates cost money), so Windows or your antivirus may warn about it. The source is public and each release is built by GitHub from it.
 

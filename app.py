@@ -115,6 +115,8 @@ class App(ctk.CTk):
         for k, d in pb.DEFAULT_FORM.items():
             self.fv[k] = self.v_min_seg if k == "min_minutes" else (bv(value=d) if isinstance(d, bool) else sv(value=d))
         self.v_key.trace_add("write", lambda *_: self._refresh_key_status())
+        self._model_notes: list = []
+        self.v_model.trace_add("write", lambda *_: self._refresh_model_notes())
 
     # ================================================================== window size
     def _scale(self) -> float:
@@ -540,8 +542,10 @@ class App(ctk.CTk):
         ui.button(kf, "Test", self.test_key, kind="secondary", width=70).grid(row=0, column=2)
         r = srow(i, 0, "API key", kf, "Get one at aistudio.google.com/apikey, or use Settings → Run setup again.",
                  sticky="ew")
-        srow(i, r, "AI model", ctk.CTkComboBox(i, values=ui.MODELS, variable=self.v_model, width=260, height=34),
-             "You can type any Gemini model name. Flash models are fast and cheap.")
+        r = srow(i, r, "AI model", ctk.CTkComboBox(i, values=ui.MODELS, variable=self.v_model, width=260,
+                                                    height=34))
+        self.add_model_note(i).grid(row=r, column=1, sticky="w", pady=(4, 0))
+        ui.hint(i, "You can also type any Gemini model name.").grid(row=r + 1, column=1, sticky="w")
 
         # Output
         i = add_card("Where results go")
@@ -622,6 +626,24 @@ class App(ctk.CTk):
         ctk.CTkEntry(f, textvariable=var, width=90, height=34, font=ui.font(14)).pack(side="left")
         ui.label(f, "  " + unit, 14).pack(side="left")
         return f
+
+    # ---- the one-line note under each AI model box (Settings and the setup wizard)
+    def add_model_note(self, parent):
+        lbl = ui.label(parent, ui.model_note(self.v_model.get()), 12, color=ui.MUTED, wrap=520)
+        self._model_notes.append(lbl)
+        return lbl
+
+    def _refresh_model_notes(self):
+        text = ui.model_note(self.v_model.get())
+        alive = []
+        for lbl in self._model_notes:
+            try:
+                if lbl.winfo_exists():
+                    lbl.configure(text=text)
+                    alive.append(lbl)
+            except Exception:  # noqa: BLE001  (label from a closed wizard)
+                pass
+        self._model_notes = alive
 
     # ================================================================== status
     def _on_focus(self, _event=None):

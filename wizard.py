@@ -268,8 +268,8 @@ class SetupWizard(ctk.CTkToplevel):
         mrow = ctk.CTkFrame(self.body, fg_color="transparent")
         ui.label(mrow, "AI model:", 13, color=ui.MUTED).pack(side="left")
         ctk.CTkComboBox(mrow, values=ui.MODELS, variable=self.app.v_model, width=220).pack(side="left", padx=8)
-        ui.label(mrow, "(leave this unless you know you want another)", 12, color=ui.MUTED).pack(side="left")
-        self._add(mrow, padx=(52, 12))
+        self._add(mrow, padx=(52, 12), pady=(0, 2))
+        self._add(self.app.add_model_note(self.body), padx=(52, 12))
 
         self.key_status = self._add(ui.label(self.body, "", 13, wrap=560), padx=(52, 12))
         self._para("Google offers a free tier with usage limits. Check AI Studio for current limits and pricing. "

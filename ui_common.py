@@ -12,7 +12,26 @@ from version import APP_VERSION
 
 APP_NAME = "Stream Timestamper"
 VERSION = APP_VERSION
-MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-4-argon"]
+MODELS = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"]
+# One-line notes shown under the model box. Google changes free-tier limits often, so no exact numbers here.
+MODEL_NOTES = {
+    "gemini-3.6-flash": "Recommended. Fast and reliable, and works with free keys (free keys get a small number "
+                        "of requests per day).",
+    "gemini-3.8-flash": "Newest Flash model. Free keys have tight daily limits and may get errors; best with a "
+                        "paid key.",
+    "gemini-3.5-flash-lite": "Fastest, with the most free requests per day. A good backup when another model hits "
+                             "its daily limit, but it may miss more segments.",
+    "gemini-4-argon": "Paid keys only (doesn't work with free keys). Most capable, but slower and costs much more "
+                      "per stream.",
+}
+
+
+def model_note(model: str) -> str:
+    m = (model or "").strip()
+    if not m:
+        return "Pick a model."
+    return MODEL_NOTES.get(m, "Custom model name. Check Google AI Studio for whether free keys can use it and "
+                              "what its limits are.")
 
 # (light, dark) pairs
 SIDEBAR_BG = ("#e8ecf2", "#14161b")

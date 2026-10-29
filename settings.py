@@ -72,7 +72,7 @@ DEFAULTS = {
     "appearance": "System",  # System / Light / Dark
     "api_key": "",  # plain text in memory only; saved to disk encrypted as api_key_enc when possible
     "api_key_enc": "",
-    "model": "gemini-3.8-flash",
+    "model": "gemini-3.6-flash",
     "output_dir": "",  # filled in by load()
     "min_stream_minutes": 40,
     "min_segment_minutes": 4,
