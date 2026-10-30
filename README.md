@@ -4,6 +4,24 @@ Reads the captions of YouTube streams, has Gemini find the segments you care abo
 
 This is an independent project and isn't affiliated with or endorsed by YouTube or Google. It uses the open-source yt-dlp library.
 
+## Download and install (Windows)
+
+1. Open this project's **Releases** page (link on the right side of the GitHub page) and download `StreamTimestamper-vX.Y.Z-windows.zip`. Only download it from there. Your browser may warn about the download ("not commonly downloaded" or "contains a virus or malware"), because security tools haven't seen this new, unsigned app before. If you got it from the Releases page, choose **Keep** / **Download anyway**. You can scan the zip with Windows Security or VirusTotal first (see "Is it safe?" above for what to expect).
+2. OPTIONAL hash check: in PowerShell run `Get-FileHash .\StreamTimestamper-vX.Y.Z-windows.zip` and compare the result with the text in the `.sha256` file on the same release page. They must match.
+3. Unzip the whole folder somewhere (not inside the zip) and run `StreamTimestamper.exe`. Windows may show a blue "Windows protected your PC" warning, because this is a new app that isn't code-signed (certificates cost money). If you downloaded it from the Releases page, click **More info → Run anyway**. Never turn off your antivirus for any app. Technical users can also confirm GitHub built the file from this source: `gh attestation verify <the zip> -R ardiberen/YT-Stream-Timestamper`.
+4. The setup wizard opens on first launch. It covers the Gemini API key, how the app keeps your channel safe, the output folder, and a short guide to tuning the prompt.
+5. **Prompt** page: pick a preset and describe what to find. Then click **Save as my preset** and tick **Start with this preset**.
+6. **Run** page: paste stream, playlist or channel links, *or* add caption files. Then press **Start**.
+7. **Results** page: read and copy the output, or open the output folder.
+8. When the app says a new version is available, download it the same way, delete the old app folder and unzip the new one. Your settings, presets and results are kept.
+
+## Getting help
+
+- Email: streamtimestamper.help@protonmail.com
+- Or open an issue on this project's **Issues** tab (needs a free GitHub account).
+
+Please include the version number (bottom of the left sidebar), what you clicked, and the log of the run that went wrong: on the Run page, click **Open log folder** and attach the newest `run-...txt` file (the API key is already removed from it), or send a screenshot of the Activity log. Never send your Gemini API key or your settings file. Nobody needs them to help you, and I will never ask for them.
+
 ## Is it safe?
 
 Fair question, since this is a free app from someone you don't know yet. You don't have to take my word for it:
@@ -31,24 +49,6 @@ Fair question, since this is a free app from someone you don't know yet. You don
 5. Open Windows Resource Monitor → Network while it runs to see the only places it connects to.
 
 **About antivirus warnings:** this app is free and not code-signed (certificates cost money), and it's packaged with PyInstaller, which is common for Python apps. Unsigned apps like that are sometimes flagged by a few lesser-known engines on VirusTotal with generic labels (like "Malware", "Unsafe" or "BehavesLike"). Those are guesses based on how a file looks, not matches for a known virus. When I scan the release, Microsoft Defender and the large engines (Kaspersky, ESET, Bitdefender, Sophos, CrowdStrike and others) report nothing. If you're unsure, check the hashes as above, or email me and I'll help. Never turn off your antivirus for any app.
-
-## Download and install (Windows)
-
-1. Open this project's **Releases** page (link on the right side of the GitHub page) and download `StreamTimestamper-vX.Y.Z-windows.zip`. Only download it from there. Your browser may warn about the download ("not commonly downloaded" or "contains a virus or malware"), because security tools haven't seen this new, unsigned app before. If you got it from the Releases page, choose **Keep** / **Download anyway**. You can scan the zip with Windows Security or VirusTotal first (see "Is it safe?" above for what to expect).
-2. OPTIONAL hash check: in PowerShell run `Get-FileHash .\StreamTimestamper-vX.Y.Z-windows.zip` and compare the result with the text in the `.sha256` file on the same release page. They must match.
-3. Unzip the whole folder somewhere (not inside the zip) and run `StreamTimestamper.exe`. Windows may show a blue "Windows protected your PC" warning, because this is a new app that isn't code-signed (certificates cost money). If you downloaded it from the Releases page, click **More info → Run anyway**. Never turn off your antivirus for any app. Technical users can also confirm GitHub built the file from this source: `gh attestation verify <the zip> -R ardiberen/YT-Stream-Timestamper`.
-4. The setup wizard opens on first launch. It covers the Gemini API key, how the app keeps your channel safe, the output folder, and a short guide to tuning the prompt.
-5. **Prompt** page: pick a preset and describe what to find. Then click **Save as my preset** and tick **Start with this preset**.
-6. **Run** page: paste stream, playlist or channel links, *or* add caption files. Then press **Start**.
-7. **Results** page: read and copy the output, or open the output folder.
-8. When the app says a new version is available, download it the same way, delete the old app folder and unzip the new one. Your settings, presets and results are kept.
-
-## Getting help
-
-- Email: streamtimestamper.help@protonmail.com
-- Or open an issue on this project's **Issues** tab (needs a free GitHub account).
-
-Please include the version number (bottom of the left sidebar), what you clicked, and the log of the run that went wrong: on the Run page, click **Open log folder** and attach the newest `run-...txt` file (the API key is already removed from it), or send a screenshot of the Activity log. Never send your Gemini API key or your settings file. Nobody needs them to help you, and I will never ask for them.
 
 ## Account safety
 
