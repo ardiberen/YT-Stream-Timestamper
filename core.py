@@ -727,9 +727,53 @@ def parse_segments(text: str) -> Optional[list[dict]]:
         except ValueError:
             end = None
         out.append({"start": start, "end": end if end is not None and end > start else None,
+                    "end_given": end,  # kept even when it's before the start (see repair_hour_typos)
                     "name": str(it.get("name") or "").strip(), "detail": str(it.get("detail") or "").strip(),
                     "summary": str(it.get("summary") or "").strip()})
     return out
+
+
+def _name_mentions(lines: list[str], name: str) -> list[int]:
+    """Seconds of the transcript lines that mention `name` (whole word, any case)."""
+    key = (name or "").strip()
+    if len(key) < 2:
+        return []
+    word = re.compile(r"\b" + re.escape(key) + r"\b", re.I)
+    out = []
+    for line in lines:
+        m = _LINE_TS.match(line)
+        if m and word.search(m.group(4)):
+            out.append(int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)))
+    return out
+
+
+def repair_hour_typos(segments: list[dict], lines: list[str], duration: Optional[float] = None) -> list[str]:
+    """Weaker models sometimes get the hour of a start time wrong (02:27:43 instead of 00:27:43), which shows up as
+    a segment that ends before it starts, or starts after the stream ends. Try the same minutes and seconds with
+    each other hour and keep the one where the person's name is mentioned close by in the transcript (or, with no
+    name to go on, the latest one that still ends after it starts). Changes segments in place; returns notes."""
+    notes = []
+    for x in segments:
+        end = x.get("end_given")
+        too_late = duration is not None and x["start"] >= duration
+        if not too_late and (end is None or end > x["start"]):
+            continue
+        mm_ss = x["start"] % 3600
+        limit = end if end is not None and end <= x["start"] else (duration or 0)
+        candidates = [h * 3600 + mm_ss for h in range(0, 24) if h * 3600 + mm_ss < limit]
+        if not candidates:
+            continue
+        mentions = _name_mentions(lines, x["name"])
+        near = [c for c in candidates if any(abs(t - c) <= 300 for t in mentions)]
+        best = (near or candidates)[-1]
+        if not near and not mentions and end is None:
+            continue  # nothing to go on: leave it rather than guess
+        notes.append(f"{x['name'] or 'a segment'}: start {fmt_ts(x['start'])} -> {fmt_ts(best)} "
+                     "(looked like a typo in the hour)")
+        x["start"] = best
+        if end is not None and end > best:
+            x["end"] = end
+    return notes
 
 
 def _name_key(name: str) -> str:
@@ -1460,6 +1504,8 @@ class Runner:
         else:
             segs = checked
             self.log(f"  after checking: {len(segs)} segment(s).")
+        for note in repair_hour_typos(segs, transcript.splitlines(), duration):
+            self.log(f"  fixed {note}.", "warn")
         tidy = tidy_segments(segs, c.min_segment_minutes, duration)
         if len(tidy) != len(segs):
             self.log(f"  after merging split calls and applying the minimum length: {len(tidy)}.")

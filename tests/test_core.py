@@ -1495,3 +1495,38 @@ class LiteHelperRunTests(FakeRunTests):
         r2.cfg.form = None
         r2.run()
         self.assertEqual(sent2, [])
+
+
+class HourTypoTests(unittest.TestCase):
+    """Real case from 3.5 Flash-Lite: James's call (00:27:43 to about 01:10) came back starting at 02:27:43."""
+    LINES = ["[00:27:40] alright next up we have James on the line", "[00:28:00] hi James go ahead",
+             "[01:10:20] thanks James take care", "[02:22:46] Kaya is on the line", "[02:27:43] so Kaya says"]
+
+    def segs(self, start, end, name="James"):
+        return core.parse_segments(json.dumps({"segments": [{"start": start, "end": end, "name": name}]}))
+
+    def test_end_before_start_is_repaired_using_the_transcript(self):
+        s = self.segs("02:27:43", "01:10:30")
+        notes = core.repair_hour_typos(s, self.LINES, 4 * 3600)
+        self.assertEqual((core.fmt_ts(s[0]["start"]), core.fmt_ts(s[0]["end"])), ("00:27:43", "01:10:30"))
+        self.assertTrue(notes and "James" in notes[0])
+
+    def test_start_after_the_stream_ends(self):
+        s = self.segs("05:27:43", "", "James")
+        core.repair_hour_typos(s, self.LINES, 4 * 3600)
+        self.assertEqual(core.fmt_ts(s[0]["start"]), "00:27:43")  # the hour where James is mentioned
+
+    def test_good_segments_are_left_alone(self):
+        s = self.segs("02:22:46", "02:52:10", "Kaya")
+        self.assertEqual(core.repair_hour_typos(s, self.LINES, 4 * 3600), [])
+        self.assertEqual(core.fmt_ts(s[0]["start"]), "02:22:46")
+
+    def test_whole_flow_puts_james_back(self):
+        lite = {"segments": [{"start": "02:27:43", "end": "01:10:30", "name": "James"},
+                             {"start": "01:11:47", "end": "01:29:50", "name": "Katie"}]}
+        s = core.parse_segments(json.dumps(lite))
+        core.repair_hour_typos(s, self.LINES, 4 * 3600)
+        tidy = core.tidy_segments(s, 4, 4 * 3600)
+        text = pb.render_segments({"find": "x", "detail_on": False, "summary_on": False}, tidy)
+        self.assertIn("00:27:43 – James – Length: ~43 minutes", text)
+        self.assertLess(text.index("James"), text.index("Katie"))
