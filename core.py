@@ -452,6 +452,11 @@ def check_result(text: str, duration: Optional[float] = None) -> list[str]:
         warnings.append("timestamps are out of order")
     if any(0 <= b - a < 10 for a, b in zip(starts, starts[1:])):
         warnings.append("some timestamps are less than 10 seconds apart (YouTube chapters need 10+)")
+    for (s1, rest1), (s2, rest2) in zip(entries, entries[1:]):
+        m = _LENGTH_RE.search(rest1)
+        if m and s2 > s1 and s1 + float(m.group(1)) * 60 > s2 + 120:
+            warnings.append(f"the segment at {fmt_ts(s1)} (~{m.group(1)} minutes) runs past the next one at "
+                            f"{fmt_ts(s2)}; one of those times or lengths is probably off")
     if duration and max(starts) > duration:
         warnings.append(f"a timestamp is past the end of the stream ({fmt_ts(int(duration))})")
     if starts[0] == 0 and len(entries) < 3:
@@ -774,6 +779,35 @@ def repair_hour_typos(segments: list[dict], lines: list[str], duration: Optional
         if end is not None and end > best:
             x["end"] = end
     return notes
+
+
+def repair_overlaps(segments: list[dict], lines: list[str], slack: int = 30) -> tuple[list[str], list[str]]:
+    """Two DIFFERENT people's segments can't overlap, so when one starts before the previous one ended, one of the
+    times is off. Look for where the later person's name first comes up in the transcript, from shortly before the
+    earlier segment ends to 15 minutes after the given start, and move their start there. If the name isn't found,
+    leave the times alone and return a warning instead. (Same-name overlaps are merged by tidy_segments.)
+    Changes segments in place; returns (fixes, warnings)."""
+    fixes, warnings = [], []
+    segs = sorted(segments, key=lambda x: x["start"])
+    for a, b in zip(segs, segs[1:]):
+        if a.get("end") is None or b["start"] >= a["end"] - slack:
+            continue
+        if _name_key(a["name"]) and _name_key(a["name"]) == _name_key(b["name"]):
+            continue
+        lo, hi = a["end"] - 120, b["start"] + 15 * 60
+        found = [t for t in _name_mentions(lines, b["name"]) if lo <= t <= hi and t > b["start"]]
+        who_a, who_b = a["name"] or "a segment", b["name"] or "the next segment"
+        if found:
+            new = found[0]
+            fixes.append(f"{who_b}: start {fmt_ts(b['start'])} -> {fmt_ts(new)} (it overlapped {who_a}; "
+                         f"{who_b} is first mentioned there)")
+            b["start"] = new
+            if b.get("end") is not None and b["end"] <= new:
+                b["end"] = None
+        else:
+            warnings.append(f"{who_a} (until {fmt_ts(a['end'])}) and {who_b} (from {fmt_ts(b['start'])}) overlap; "
+                            "one of those times is probably off")
+    return fixes, warnings
 
 
 def _name_key(name: str) -> str:
@@ -1506,6 +1540,11 @@ class Runner:
             self.log(f"  after checking: {len(segs)} segment(s).")
         for note in repair_hour_typos(segs, transcript.splitlines(), duration):
             self.log(f"  fixed {note}.", "warn")
+        fixes, overlaps = repair_overlaps(segs, transcript.splitlines())
+        for note in fixes:
+            self.log(f"  fixed {note}.", "warn")
+        for note in overlaps:
+            self.log(f"Check before posting: {note}.", "warn")
         tidy = tidy_segments(segs, c.min_segment_minutes, duration)
         if len(tidy) != len(segs):
             self.log(f"  after merging split calls and applying the minimum length: {len(tidy)}.")

@@ -1530,3 +1530,43 @@ class HourTypoTests(unittest.TestCase):
         text = pb.render_segments({"find": "x", "detail_on": False, "summary_on": False}, tidy)
         self.assertIn("00:27:43 – James – Length: ~43 minutes", text)
         self.assertLess(text.index("James"), text.index("Katie"))
+
+
+class OverlapTests(unittest.TestCase):
+    """Real case (YouTube captions + 3.5 Flash-Lite): Steven at 02:48:54 for ~22 min, but Kaya's call ran until
+    about 02:53:34 and Steven was actually introduced at about 02:54:5x."""
+    LINES = ["[02:23:30] next we have Kaya", "[02:48:50] so Kaya you were saying",
+             "[02:53:30] thanks Kaya take care", "[02:54:50] alright Steven you're on the air",
+             "[02:55:10] Steven go ahead"]
+
+    def segs(self):
+        return core.parse_segments(json.dumps({"segments": [
+            {"start": "02:23:34", "end": "02:53:34", "name": "Kaya"},
+            {"start": "02:48:54", "end": "03:10:54", "name": "Steven"}]}))
+
+    def test_overlap_fixed_from_where_the_name_comes_up(self):
+        s = self.segs()
+        fixes, warnings = core.repair_overlaps(s, self.LINES)
+        self.assertEqual((fixes and "Steven" in fixes[0], warnings), (True, []))
+        tidy = core.tidy_segments(s, 4)
+        text = pb.render_segments({"find": "x", "detail_on": False, "summary_on": False}, tidy)
+        self.assertIn("02:54:50 – Steven – Length: ~16 minutes", text)
+        self.assertIn("02:23:34 – Kaya – Length: ~30 minutes", text)
+
+    def test_name_not_found_means_a_warning_not_a_guess(self):
+        s = self.segs()
+        fixes, warnings = core.repair_overlaps(s, ["[02:54:50] next caller go ahead"])
+        self.assertEqual(fixes, [])
+        self.assertTrue(warnings and "overlap" in warnings[0])
+        self.assertEqual(core.fmt_ts(s[1]["start"]), "02:48:54")  # left alone
+
+    def test_back_to_back_calls_are_fine(self):
+        s = core.parse_segments(json.dumps({"segments": [
+            {"start": "01:00:00", "end": "01:20:00", "name": "A"}, {"start": "01:19:45", "end": "01:30:00", "name": "B"}]}))
+        self.assertEqual(core.repair_overlaps(s, []), ([], []))  # 15 s is within the slack
+
+    def test_check_result_warns_about_overlaps_from_any_model(self):
+        text = "00:00 – Intro\n02:23:34 – Kaya – Length: ~30 minutes\n02:48:54 – Steven – Length: ~22 minutes\n"
+        self.assertTrue(any("runs past the next one" in w for w in core.check_result(text)))
+        ok = "00:00 – Intro\n02:23:34 – Kaya – Length: ~30 minutes\n02:54:54 – Steven – Length: ~16 minutes\n"
+        self.assertFalse(any("runs past" in w for w in core.check_result(ok)))

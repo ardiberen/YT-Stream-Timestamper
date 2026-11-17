@@ -72,10 +72,12 @@ class WindowsClipboardTests(unittest.TestCase):
                 p.kill()
                 self.fail("the other program didn't finish")
         if p.returncode == 2:
+            p.stdout.close()
             self.skipTest("clipboard not available on this machine")
         self.assertEqual(p.returncode, 0)
         self.root.update()
-        return p.stdout.read().decode("utf-8")
+        with p.stdout:
+            return p.stdout.read().decode("utf-8")
 
     def text_box(self):
         import tkinter as tk
