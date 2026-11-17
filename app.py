@@ -96,6 +96,7 @@ class App(ctk.CTk):
         self._split_user_moved = False
 
         self._init_vars()
+        ui.install_clipboard_fix(self)
         self._build()
         self._load_initial_prompt()
         self.show_page("run")
@@ -1632,8 +1633,7 @@ class App(ctk.CTk):
 
     def copy_result(self):
         text = self.view_box.get("1.0", "end").rstrip("\n")
-        self.clipboard_clear()
-        self.clipboard_append(text)
+        ui.write_clipboard(self, text)
         self.btn_copy.configure(text="Copied ✓")
         self.after(1500, lambda: self.btn_copy.configure(text="Copy all"))
 
