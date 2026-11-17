@@ -50,7 +50,7 @@ class CaptionFileHelp(ctk.CTkToplevel):
         self.configure(fg_color=ui.CONTENT_BG)
         self.transient(parent)
         ui.apply_window_icon(self)
-        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        body = ui.ScrollFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=16, pady=(16, 0))
         body.grid_columnconfigure(0, weight=1)
         ui.label(body, "Caption files: the zero-risk way", 20, "bold").grid(row=0, column=0, sticky="w", padx=8)
@@ -167,7 +167,7 @@ class SetupWizard(ctk.CTkToplevel):
     def _new_body(self):
         if self.body is not None:
             self.body.destroy()
-        self.body = ctk.CTkScrollableFrame(self.main, fg_color="transparent")
+        self.body = ui.ScrollFrame(self.main, fg_color="transparent")
         self.body.grid(row=1, column=0, sticky="nsew", padx=18)
         self.body.grid_columnconfigure(0, weight=1)
         self._row = 0

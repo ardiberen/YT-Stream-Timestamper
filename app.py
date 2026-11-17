@@ -73,6 +73,7 @@ class App(ctk.CTk):
         self.log_window: LogWindow | None = None
         self.runlog = runlog.RunLog()
         self._split_placed = False
+        self._split_h = 0
         self._split_before = 0
         self._split_user_moved = False
 
@@ -177,11 +178,7 @@ class App(ctk.CTk):
                                       hover_color=ui.NAV_HOVER, font=ui.font(13),
                                       command=lambda: self.show_page("settings"))
         self.side_key.grid(row=r, column=0, sticky="ew", padx=12)
-        self.side_safe = ctk.CTkButton(sb, text="●  YouTube: no login used", anchor="w", height=30,
-                                       fg_color="transparent", hover_color=ui.NAV_HOVER, font=ui.font(13),
-                                       text_color=ui.OK, command=lambda: self.show_page("settings"))
-        self.side_safe.grid(row=r + 1, column=0, sticky="ew", padx=12)
-        ui.label(sb, f"   Version {ui.VERSION}", 11, color=ui.MUTED).grid(row=r + 2, column=0, sticky="ew",
+        ui.label(sb, f"   Version {ui.VERSION}", 11, color=ui.MUTED).grid(row=r + 1, column=0, sticky="ew",
                                                                          padx=12, pady=(8, 16))
 
     def show_page(self, key: str):
@@ -217,33 +214,32 @@ class App(ctk.CTk):
         self.banner.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         self.banner.grid_remove()
 
-        # links on top, controls + Activity below, with a bar between them that can be dragged up or down
-        sc = self._scale()
-        self.run_split = tk.PanedWindow(body, orient="vertical", sashwidth=max(6, int(8 * sc)), sashrelief="flat",
-                                        borderwidth=0, opaqueresize=True, showhandle=False,
-                                        sashcursor="sb_v_double_arrow", bg=ui.pick(ui.CARD_BORDER))
-        self.run_split.grid(row=1, column=0, sticky="nsew")
-        top = ctk.CTkFrame(self.run_split, fg_color=ui.CONTENT_BG, corner_radius=0)
+        # links on top, controls + Activity below, with a grab handle between them to drag up or down
+        self._run_body = body
+        body.grid_rowconfigure(1, weight=0)
+        body.grid_rowconfigure(3, weight=1)
+        top = ctk.CTkFrame(body, fg_color="transparent", corner_radius=0, height=200)
+        top.grid(row=1, column=0, sticky="nsew")
+        top.grid_propagate(False)
         top.grid_columnconfigure(0, weight=1)
         top.grid_rowconfigure(0, weight=1)
-        links = ctk.CTkScrollableFrame(top, fg_color=ui.CONTENT_BG, corner_radius=0)
-        links.grid(row=0, column=0, sticky="nsew")
-        links.grid_columnconfigure(0, weight=1)
-        bottom = ctk.CTkFrame(self.run_split, fg_color=ui.CONTENT_BG, corner_radius=0)
+        self._links_area = top
+        links = top
+        self._build_split_handle(body).grid(row=2, column=0, sticky="ew")
+        bottom = ctk.CTkFrame(body, fg_color="transparent", corner_radius=0)
+        bottom.grid(row=3, column=0, sticky="nsew")
         bottom.grid_columnconfigure(0, weight=1)
         bottom.grid_rowconfigure(2, weight=1)
-        self.run_split.add(top, minsize=int(SPLIT_TOP_MIN * sc), stretch="never")
-        self.run_split.add(bottom, minsize=int(SPLIT_BOTTOM_MIN * sc), stretch="always")
-        self.run_split.bind("<ButtonRelease-1>", self._on_split_moved, add="+")
-        self.run_split.bind("<Configure>", self._on_split_configure, add="+")
+        body.bind("<Configure>", self._on_split_configure, add="+")
 
         outer, inner = ui.card(links, "Stream links", "One per line: streams, playlists or channels.")
-        outer.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        outer.grid(row=0, column=0, sticky="nsew")
         self._links_card = outer
         inner.grid_columnconfigure(0, weight=1)
-        self.urls_box = ctk.CTkTextbox(inner, height=110, font=ui.font(14), border_width=1,
+        inner.grid_rowconfigure(0, weight=1)  # the links box grows and shrinks with the handle
+        self.urls_box = ctk.CTkTextbox(inner, height=60, font=ui.font(14), border_width=1,
                                        border_color=ui.CARD_BORDER)
-        self.urls_box.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.urls_box.grid(row=0, column=0, columnspan=2, sticky="nsew")
         self.urls_box.insert("1.0", self.s.get("last_urls", ""))
         self.links_off_lbl = ui.label(inner, "Links are turned off: 'Caption files only' is on in Settings.", 13,
                                       color=ui.WARN)
@@ -280,7 +276,7 @@ class App(ctk.CTk):
         prog.grid_columnconfigure(0, weight=1)
         self.progress = ctk.CTkProgressBar(prog, height=10, corner_radius=5, progress_color=ui.ACCENT)
         self.progress.set(0)
-        self.progress.grid(row=0, column=0, sticky="ew")
+        self.progress.grid(row=0, column=0, columnspan=2, sticky="ew")
         self.status_lbl = ui.label(prog, "Ready.", 13, color=ui.MUTED)
         self.status_lbl.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.usage_lbl = ui.label(prog, "", 12, color=ui.MUTED)
@@ -300,47 +296,90 @@ class App(ctk.CTk):
         self.log_box.grid(row=0, column=0, columnspan=2, sticky="nsew")
         self._config_log_tags()
 
-    # ---- the draggable bar between the links and the Activity log
+    # ---- the grab handle between the links and the Activity log
+    def _build_split_handle(self, parent):
+        """A full-width strip with a visible grip. Drag it to resize; double-click to shrink/restore the links."""
+        bar = ctk.CTkFrame(parent, fg_color="transparent", height=26, cursor="sb_v_double_arrow")
+        bar.grid_columnconfigure((0, 3), weight=1)
+        bar.grid_rowconfigure(0, weight=1)
+        bar.grid_propagate(False)
+        grip = ctk.CTkFrame(bar, width=140, height=8, corner_radius=4, fg_color=ui.GRIP,
+                            cursor="sb_v_double_arrow")
+        grip.grid(row=0, column=1, pady=9)
+        tip = ui.label(bar, "drag to resize", 11, color=ui.MUTED, cursor="sb_v_double_arrow")
+        tip.grid(row=0, column=2, padx=(10, 0))
+        self._grip = grip
+        for w in (bar, grip, tip):
+            w.bind("<Button-1>", self._split_press, add="+")
+            w.bind("<B1-Motion>", self._split_drag, add="+")
+            w.bind("<ButtonRelease-1>", self._on_split_moved, add="+")
+            w.bind("<Double-Button-1>", self._split_toggle, add="+")
+            w.bind("<Enter>", lambda e: grip.configure(fg_color=ui.ACCENT), add="+")
+            w.bind("<Leave>", lambda e: grip.configure(fg_color=ui.GRIP), add="+")
+        return bar
+
+    def _split_limits(self) -> tuple[int, int]:
+        sc = self._scale()
+        lo = int(SPLIT_TOP_MIN * sc)
+        room = self._run_body.winfo_height() - int((SPLIT_BOTTOM_MIN + 26) * sc)
+        if getattr(self, "_banner_visible", False):
+            room -= self.banner.winfo_height()
+        return lo, max(lo, room)
+
     def _split_y(self) -> int:
-        try:
-            return int(self.run_split.sash_coord(0)[1])
-        except (tk.TclError, IndexError, TypeError, ValueError):
-            return 0
+        """Height of the links area in screen pixels."""
+        return self._split_h
 
     def _place_split(self, y: int):
-        try:
-            self.run_split.sash_place(0, 0, max(1, int(y)))
-        except tk.TclError:
-            pass
+        lo, hi = self._split_limits()
+        self._split_h = max(lo, min(hi, int(y)))
+        self._links_area.configure(height=max(1, round(self._split_h / self._scale())))
+
+    def _split_press(self, event):
+        self._drag_from = (event.y_root, self._split_h)
+
+    def _split_drag(self, event):
+        y0, h0 = getattr(self, "_drag_from", (event.y_root, self._split_h))
+        self._place_split(h0 + event.y_root - y0)
+
+    def _split_toggle(self, event=None):
+        lo, _ = self._split_limits()
+        if self._split_h > lo + 4:
+            self._split_restore_to = self._split_h
+            self._place_split(lo)
+        else:
+            self._place_split(getattr(self, "_split_restore_to", 0) or self._default_split())
+        self._on_split_moved()
+
+    def _default_split(self) -> int:
+        return self._links_card.winfo_reqheight() + int(4 * self._scale())
 
     def _on_split_configure(self, event=None):
-        """First time the Run page has a real size: put the bar where it was last left (or fit the links)."""
-        if self._split_placed:
-            return
-        h = self.run_split.winfo_height()
+        """Put the handle where it was last left (or just below the links) once the page has a real size,
+        and keep it inside the window when the window is resized."""
+        h = self._run_body.winfo_height()
         if h < 100:
+            return
+        if self._split_placed:
+            self._place_split(self._split_h)
             return
         self._split_placed = True
         try:
             frac = float(self.s.get("run_split") or 0)
         except (TypeError, ValueError):
             frac = 0.0
-        if 0.05 <= frac <= 0.9:
-            y = int(h * frac)
-        else:
-            y = min(self._links_card.winfo_reqheight() + int(14 * self._scale()), int(h * 0.55))
-        self._place_split(y)
+        self._place_split(int(h * frac) if 0.05 <= frac <= 0.9 else min(self._default_split(), int(h * 0.55)))
 
     def _on_split_moved(self, event=None):
         if self.worker and self.worker.is_alive():
             self._split_user_moved = True  # keep where they put it during a run
             return
-        h, y = self.run_split.winfo_height(), self._split_y()
-        if h >= 100 and y > 0:
-            self.s["run_split"] = round(y / h, 3)
+        h = self._run_body.winfo_height()
+        if h >= 100 and self._split_h > 0:
+            self.s["run_split"] = round(self._split_h / h, 3)
 
     def _collapse_links(self):
-        """During a run, give the Activity log most of the page (the links can still be scrolled or dragged open)."""
+        """During a run, give the Activity log most of the page (drag the handle to see the links again)."""
         self._split_user_moved = False
         self._split_before = self._split_y()
         self._place_split(int(SPLIT_TOP_MIN * self._scale()))
@@ -352,7 +391,7 @@ class App(ctk.CTk):
 
     # ------------------------------------------------------------------ Prompt page
     def _build_prompt(self, page):
-        sc = ctk.CTkScrollableFrame(page, fg_color="transparent")
+        sc = ui.ScrollFrame(page, fg_color="transparent")
         sc.grid(row=1, column=0, sticky="nsew", padx=18, pady=(12, 16))
         sc.grid_columnconfigure(0, weight=1)
         fw = self.form_widgets
@@ -488,7 +527,7 @@ class App(ctk.CTk):
         self.results_count = ui.label(lh, "Saved results", 15, "bold")
         self.results_count.pack(side="left")
         ui.button(lh, "↻ Refresh", self.refresh_results, kind="ghost", width=90, height=30).pack(side="right")
-        self.results_list = ctk.CTkScrollableFrame(lo, fg_color="transparent")
+        self.results_list = ui.ScrollFrame(lo, fg_color="transparent")
         self.results_list.grid(row=1, column=0, sticky="nsew", padx=6)
         self.results_list.grid_columnconfigure(0, weight=1)
         ui.button(lo, "Open output folder", self.open_output, kind="secondary").grid(
@@ -514,7 +553,7 @@ class App(ctk.CTk):
 
     # ------------------------------------------------------------------ Settings page
     def _build_settings(self, page):
-        sc = ctk.CTkScrollableFrame(page, fg_color="transparent")
+        sc = ui.ScrollFrame(page, fg_color="transparent")
         sc.grid(row=1, column=0, sticky="nsew", padx=18, pady=(12, 16))
         sc.grid_columnconfigure(0, weight=1)
         row = [0]
@@ -702,7 +741,6 @@ class App(ctk.CTk):
             self.links_off_lbl.grid()
         else:
             self.links_off_lbl.grid_remove()
-        self.side_safe.configure(text="●  YouTube: never contacted" if on else "●  YouTube: no login used")
 
     def show_banner(self, text: str, kind: str = "warn", button: str | None = None, command=None,
                     is_update: bool = False):
@@ -833,10 +871,6 @@ class App(ctk.CTk):
         self.v_appearance.set(value)
         ctk.set_appearance_mode(value.lower())
         self._config_log_tags()
-        try:
-            self.run_split.configure(bg=ui.pick(ui.CARD_BORDER))
-        except tk.TclError:
-            pass
         if self.log_window is not None and self.log_window.winfo_exists():
             self.log_window.config_tags()
         self.persist()

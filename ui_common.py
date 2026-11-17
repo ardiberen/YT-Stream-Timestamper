@@ -42,6 +42,7 @@ TEXT = ("#1f2328", "#e6e8eb")
 MUTED = ("#5b6472", "#8c95a3")
 ACCENT = ("#2f6fe0", "#3b82f6")
 ACCENT_HOVER = ("#2558b8", "#2f6fd6")
+GRIP = ("#b7c0cd", "#4a5260")  # the Run page's drag handle
 NAV_HOVER = ("#dbe1ea", "#20242c")
 NAV_SELECTED = ("#d3e2fb", "#23314a")
 NAV_SELECTED_TEXT = ("#1d4fb0", "#8fb8ff")
@@ -168,6 +169,101 @@ def help_toggle(parent, target) -> ctk.CTkButton:
 
     return ctk.CTkButton(parent, text="?", width=22, height=22, corner_radius=11, fg_color=SECONDARY,
                          hover_color=SECONDARY_HOVER, text_color=MUTED, font=font(12, "bold"), command=flip)
+
+
+WHEEL_STEP = 90  # logical px the page moves per mouse-wheel notch
+GLIDE_MS = 12  # time between glide frames
+GLIDE_SHARE = 0.4  # share of the remaining distance covered each frame
+
+
+class ScrollFrame(ctk.CTkScrollableFrame):
+    """CTkScrollableFrame with better mouse-wheel scrolling.
+
+    CustomTkinter's own handler moves about 20 px per wheel notch on Windows, redrawing in many tiny jumps, and
+    ignores the wheel completely while the pointer is over any text box. This one moves WHEEL_STEP per notch with
+    a short glide, and only lets a text box keep the wheel when it actually has more text to scroll.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._glide_target: float | None = None
+        self._glide_job = None
+        try:
+            self._parent_canvas.configure(yscrollincrement=1)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # CustomTkinter binds this name to the mouse wheel for the whole app (bind_all), so overriding it is enough.
+    def _mouse_wheel_all(self, event):
+        try:
+            self._on_wheel(event)
+        except Exception:  # noqa: BLE001  (a scroll problem must never break the app)
+            pass
+
+    def _wheel_is_mine(self, widget) -> bool:
+        w = widget
+        while w is not None and not isinstance(w, str):
+            if w is self or w is getattr(self, "_parent_canvas", None):
+                return True
+            if isinstance(w, (ctk.CTkScrollbar, ctk.CTkSlider)):
+                return False
+            if isinstance(w, ctk.CTkTextbox):
+                first, last = w.yview()
+                if first > 0.0 or last < 1.0:
+                    return False  # the text box has its own text to scroll
+            elif isinstance(w, ctk.CTkScrollableFrame):
+                return False  # another scrolling area inside this one
+            w = getattr(w, "master", None)
+        return False
+
+    def _on_wheel(self, event):
+        if getattr(self, "_shift_pressed", False) or not self._wheel_is_mine(event.widget):
+            return
+        canvas = self._parent_canvas
+        if tuple(canvas.yview()) == (0.0, 1.0):
+            return
+        if sys.platform.startswith("win"):
+            notches = -event.delta / 120
+        elif sys.platform == "darwin":
+            notches = -event.delta / 3
+        else:
+            notches = -1 if getattr(event, "num", 5) == 4 else 1
+        self.scroll_by(notches * WHEEL_STEP * window_scale(self))
+
+    def _content_height(self) -> float:
+        box = self._parent_canvas.bbox("all")
+        return float(box[3] - box[1]) if box else 0.0
+
+    def scroll_by(self, pixels: float) -> None:
+        canvas = self._parent_canvas
+        total = self._content_height()
+        room = total - canvas.winfo_height()
+        if total <= 0 or room <= 0:
+            return
+        start = self._glide_target if self._glide_target is not None else canvas.canvasy(0)
+        self._glide_target = max(0.0, min(room, start + pixels))
+        if self._glide_job is None:
+            self._glide()
+
+    def _glide(self):
+        self._glide_job = None
+        canvas = self._parent_canvas
+        target, total = self._glide_target, self._content_height()
+        if target is None or total <= 0:
+            self._glide_target = None
+            return
+        cur = canvas.canvasy(0)
+        left = target - cur
+        if abs(left) <= 1.5:
+            canvas.yview_moveto(target / total)
+            self._glide_target = None
+            return
+        step = left * GLIDE_SHARE
+        if abs(step) < 1:
+            step = 1 if left > 0 else -1
+        canvas.yview_moveto((cur + step) / total)
+        canvas.update_idletasks()  # paint everything at the new position together (avoids torn redraws)
+        self._glide_job = self.after(GLIDE_MS, self._glide)
 
 
 def work_area(win) -> tuple[int, int, int, int]:
