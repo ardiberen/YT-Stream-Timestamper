@@ -65,6 +65,9 @@ class App(ctk.CTk):
 
         self.q: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
+        self.discard_event = threading.Event()  # set with Stop = delete the unfinished parts
+        self._tr_thread: threading.Thread | None = None
+        self._run_whisper = False
         self.worker: threading.Thread | None = None
         self.wizard: SetupWizard | None = None
         self.pages: dict[str, ctk.CTkFrame] = {}
@@ -593,7 +596,8 @@ class App(ctk.CTk):
             self._append_log(f"Queue: {e}", "warn")
 
     def _busy(self) -> bool:
-        return bool((self.worker and self.worker.is_alive()) or self._transcribing)
+        return bool((self.worker and self.worker.is_alive()) or self._transcribing
+                    or (self._tr_thread and self._tr_thread.is_alive()))
 
     def _maybe_auto_run(self, manual: bool = False):
         s = self.s
@@ -883,6 +887,8 @@ class App(ctk.CTk):
                                                 "wait for YouTube's captions.", folded=True)
         ctk.CTkCheckBox(i, text=THEN_TS_TEXT, variable=self.v_then_ts, font=ui.font(13)).grid(
             row=2, column=1, sticky="w", pady=(12, 0))
+        ui.button(i, "Open Transcripts folder", self.open_transcripts, kind="secondary").grid(
+            row=3, column=1, sticky="w", pady=(10, 0))
         srow(i, 0, "Speech model", ctk.CTkOptionMenu(i, values=list(transcribe.MODELS), variable=self.v_whisper,
                                                        width=130, height=34),
              "base: " + transcribe.MODELS["base"][1] + ". small: " + transcribe.MODELS["small"][1] + ". Each is "
@@ -1094,6 +1100,7 @@ class App(ctk.CTk):
         model = self.s.get("whisper_model") or transcribe.DEFAULT_MODEL
         self._transcribing = True
         self.stop_event.clear()
+        self.discard_event.clear()
         self._clear_log()
         self.runlog.start([f"{APP_NAME} {ui.VERSION} - transcribing {os.path.basename(path)} "
                            f"({time.strftime('%Y-%m-%d %H:%M:%S')})", f"Model: {model}", ""])
@@ -1118,17 +1125,22 @@ class App(ctk.CTk):
                                             log=lambda msg: self.q.put(("log", msg, "info")))
                 self.q.put(("transcribed", path, str(srt)))
             except transcribe.Stopped:
+                if self.discard_event.is_set():
+                    transcribe.discard_partial(path, out)
                 self.q.put(("transcribe_stopped", path))
             except Exception as e:  # noqa: BLE001
                 self.q.put(("transcribe_error", path, str(e)))
 
-        threading.Thread(target=work, daemon=True).start()
+        self._tr_thread = threading.Thread(target=work, daemon=True)
+        self._tr_thread.start()
 
     def _on_tprogress(self, done: float, total):
         self.progress.set(done / total if total else 0)
         started, first_done = self._t_started
         if first_done is None:  # measure speed from where this session began (it may be resuming)
             self._t_started = (time.time(), done)
+            self.status_lbl.configure(text=f"Transcribing: {core.fmt_ts(int(done))} of {core.fmt_ts(int(total or 0))}"
+                                           " (time left shows after the first 10 minutes)")
             return
         rate = (done - first_done) / max(1.0, time.time() - started)
         left = f", about {int((total - done) / rate / 60) + 1} min left" if total and rate > 0 else ""
@@ -1136,6 +1148,8 @@ class App(ctk.CTk):
                                        f"{core.fmt_ts(int(total or 0))}{left}")
 
     def _end_transcription(self, text: str, level: str):
+        if not self._transcribing:
+            return  # already ended (Stop ends it at once; the background work catches up later)
         self._transcribing = False
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
@@ -1444,6 +1458,14 @@ class App(ctk.CTk):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def open_transcripts(self):
+        d = os.path.join(self.v_out.get().strip(), "Transcripts")
+        try:
+            os.makedirs(d, exist_ok=True)
+            ui.open_path(d)
+        except OSError as e:
+            messagebox.showerror(APP_NAME, f"Could not open the folder: {e}")
+
     def open_output(self):
         d = self.v_out.get().strip()
         if not d:
@@ -1633,9 +1655,11 @@ class App(ctk.CTk):
         cfg.use_whisper = bool(whisper)
         cfg.transcribe_only = transcribe_only
         self._transcribe_only_run = transcribe_only
+        self._run_whisper = bool(whisper)
         self._auto_run = auto
 
         self.stop_event.clear()
+        self.discard_event.clear()
         if only_files is None:  # a fresh transcript's run keeps the transcription's lines above it
             self._clear_log()
         self.runlog.start(self._log_header(cfg, urls, files))
@@ -1660,6 +1684,7 @@ class App(ctk.CTk):
             stop=self.stop_event,
             files=files,
             on_gemini=lambda event, model: self.q.put(("gemini", event, model)),
+            discard=self.discard_event,
         )
 
         def work():
@@ -1671,10 +1696,27 @@ class App(ctk.CTk):
         return True
 
     def stop(self):
+        running = bool(self.worker and self.worker.is_alive())
+        if self._transcribing or (running and self._run_whisper):
+            choice = self._ask_choice(
+                "Stop", "Stop transcribing?\n\nThe part transcribed so far can be kept, so the same recording or "
+                        "link continues from there next time, or deleted. Finished transcripts and saved results "
+                        "are always kept.",
+                [("keep", "Stop, keep the part done", "primary"), ("discard", "Stop and delete it", "secondary"),
+                 ("cancel", "Keep going", "ghost")])
+            if choice not in ("keep", "discard"):
+                return
+            if choice == "discard":
+                self.discard_event.set()
         self.stop_event.set()
         self.btn_stop.configure(state="disabled")
-        self.status_lbl.configure(text="Stopping after the current step ..." if not self._transcribing else
-                                  "Stopping: saving what's done so far ...")
+        self.status_lbl.configure(text="Stopping ...")
+        if self._transcribing:  # the screen is freed at once; the background work notices Stop by itself
+            self._end_transcription("Stopped." + (" The unfinished transcript was deleted." if
+                                                  self.discard_event.is_set() else
+                                                  " The part done so far is saved: transcribe the same file again "
+                                                  "(or click Continue next time the app opens) to carry on."),
+                                    "warn")
 
     # ================================================================== queue -> UI
     def _config_log_tags(self):
@@ -1802,8 +1844,7 @@ class App(ctk.CTk):
                 elif kind == "transcribed":
                     self._on_transcribed(item[1], item[2])
                 elif kind == "transcribe_stopped":
-                    self._end_transcription("Stopped. The part done so far is saved: transcribe the same file "
-                                            "again (or click Continue next time the app opens) to carry on.", "warn")
+                    self._end_transcription("Stopped.", "warn")  # normally already shown by stop()
                 elif kind == "transcribe_error":
                     self._end_transcription(f"Couldn't transcribe {os.path.basename(item[1])}: {item[2]}", "error")
                 elif kind == "backlog_listed":

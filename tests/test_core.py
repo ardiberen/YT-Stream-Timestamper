@@ -1277,3 +1277,33 @@ class WorklistTests(unittest.TestCase):
         s = {"backlog_per_day": 50}
         worklist.add_backlog(s, "u", "u", [(f"{i:011d}", "") for i in range(30)], now=self.T0)
         self.assertEqual(len(worklist.plan_auto_run(s, 20, self.T0)), 20)
+
+
+class StopTests(FakeRunTests):
+    def test_stop_during_a_slow_gemini_answer_is_quick(self):
+        import time as _t
+        release = threading.Event()
+
+        def slow(*a):
+            release.wait(30)  # a Gemini answer that takes ages
+            return "late"
+        core.generate = slow
+        r = self.make("aaaaaaaaaaa")
+        threading.Timer(0.5, r.stop.set).start()
+        t0 = _t.time()
+        sm = r.run()
+        release.set()
+        self.assertTrue(sm["stopped"])
+        self.assertLess(_t.time() - t0, 3)
+        self.assertEqual(sm["saved"], [])
+
+    def test_stop_during_a_slow_youtube_page_is_quick(self):
+        import time as _t
+        release = threading.Event()
+        r = self.make("aaaaaaaaaaa")
+        r._fetch_info = lambda url: release.wait(30) or {}
+        threading.Timer(0.5, r.stop.set).start()
+        t0 = _t.time()
+        self.assertTrue(r.run()["stopped"])
+        release.set()
+        self.assertLess(_t.time() - t0, 3)

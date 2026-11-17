@@ -96,6 +96,16 @@ def resume_point(recording: str, out_dir: str) -> float:
     return 0.0
 
 
+def discard_partial(recording: str, out_dir: str) -> None:
+    """Delete an unfinished transcript of `recording` (Stop + 'delete the unfinished parts')."""
+    _, partial, progress = output_paths(recording, out_dir)
+    for p in (partial, progress):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
 def unfinished(out_dir: str) -> list[dict]:
     """Interrupted transcriptions in this output folder: [{"source", "done_until", "duration"}]."""
     out = []

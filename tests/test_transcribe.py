@@ -196,6 +196,40 @@ class LinkTranscribeTests(unittest.TestCase):
         self.assertEqual(r2.run()["skipped"], 1)  # already transcribed: not downloaded again
         self.assertEqual(self.downloads, ["aaaaaaaaaaa"])
 
+    def _stop_mid_transcription(self, discard):
+        import time as _t
+        tr.CHUNK_SECONDS = 20
+        slow = FakeModel()
+        orig = slow.transcribe
+
+        def slow_transcribe(samples, **kw):
+            _t.sleep(0.3)
+            return orig(samples, **kw)
+        slow.transcribe = slow_transcribe
+        tr.load_model = lambda name, folder=None: slow
+        r, logs = self.runner()
+        if discard:
+            r.discard.set()
+        threading.Timer(0.5, r.stop.set).start()
+        sm = r.run()
+        self.assertTrue(sm["stopped"], logs)
+        return Path(self.out, "Transcripts")
+
+    def test_stop_and_delete_unfinished_parts(self):
+        t = self._stop_mid_transcription(discard=True)
+        self.assertEqual(list((t / "audio").iterdir()), [])  # the downloaded audio is gone
+        self.assertEqual([p.name for p in t.iterdir() if p.is_file()], [])  # no partial transcript left
+        self.assertEqual([p for p in Path(self.out).iterdir() if p.is_file()], [])  # no result either
+
+    def test_stop_and_keep_continues_next_time(self):
+        t = self._stop_mid_transcription(discard=False)
+        self.assertTrue(list((t / "audio").iterdir()))  # kept for next time
+        self.assertTrue(list(t.glob("*.progress.json")))
+        r, logs = self.runner()
+        self.assertEqual(r.run()["done"], 1)
+        self.assertEqual(self.downloads, ["aaaaaaaaaaa"])  # not downloaded again
+        self.assertTrue(any("Continuing from" in m for m in logs), logs)
+
     def test_caption_file_named_with_video_id_gets_a_linkable_result(self):
         srt = Path(self.out, "Old Stream [bbbbbbbbbbb].srt")
         srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nhi\n", encoding="utf-8")
