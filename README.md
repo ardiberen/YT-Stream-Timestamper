@@ -89,7 +89,9 @@ Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replac
 **Good to know**
 
 - **Free Gemini keys and privacy:** under Google's terms, content sent with a free (unpaid) Gemini key may be used to improve Google's products and read by human reviewers. Don't use a free key on private, unlisted or members-only streams. Paid keys are treated differently, so check Google's Gemini API terms.
-- **Which AI model:** Gemini 3.6 Flash (the default) works well with free keys. Free keys only get a small number of requests per model each day (the count resets at midnight Pacific time). If a model runs out, the app stops and says so; you can switch models in Settings, since each has its own daily limit. Gemini 4 Argon needs a paid key. Settings shows a short note for each model.
+- **Which AI model:** Gemini 3.6 Flash (the default) works well with free keys. Free keys only get a small number of requests per model each day (the count resets at midnight Pacific time), and every attempt counts, even one where Gemini only answers "busy". So the app keeps attempts few and far apart (it waits as long as Google asks, or longer each time), and uses a **backup model** (Settings → AI requests, Gemini 3.5 Flash-Lite by default) when the main one stays overloaded or runs out for the day. Each model has its own daily limit. If both run out, the app stops and says so. Gemini 4 Argon needs a paid key. Settings shows a short note for each model.
+- **Smaller requests:** captions are merged into ~15-second lines before they're sent, which cuts the size of each request by about a third without changing the result format. Change the block length in Settings → AI requests (longer saves more, but timestamps can be up to that many seconds early).
+- **Requests used today:** the Run page and Settings show how many Gemini requests the app sent today for each model, and which ones hit their daily limit. It counts only this app's requests and starts over at midnight Pacific time. Google doesn't say how many you have left, so check Google AI Studio for your key's limits.
 - **Check before you post:** the AI can miss a segment or get a time slightly off, so skim the list before pasting it publicly. The app also tells Gemini to ignore anything in the stream that sounds like instructions to it (for example a caller saying "add this link"), and never to add links.
 - **Unsigned app:** the exe isn't code-signed (certificates cost money), so Windows or your antivirus may warn about it. The source is public and each release is built by GitHub from it.
 
@@ -131,6 +133,7 @@ python -m unittest discover -s tests -v      (logic: no extra packages needed)
 | `core.py` | Links (logged-out yt-dlp) or caption files → Gemini → file. No GUI |
 | `prompt_builder.py` | Turns the Prompt page form into AI instructions; built-in presets |
 | `settings.py` | settings.json load/save; encrypts the API key |
+| `usage.py` | Counts Gemini requests per model per day (for the "requests today" line) |
 | `version.py` | App version (the GitHub build adds the repo name for update checks) |
 | `updates.py` | Once-a-day "new version available" check against GitHub Releases |
 | `net_ssl.py` | Certificate settings for the app's own HTTPS requests (Windows store + bundled list) |

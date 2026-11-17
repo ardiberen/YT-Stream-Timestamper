@@ -94,7 +94,9 @@ class RunConfig:
     max_per_run: int = 20
     skip_existing: bool = True
     save_transcript: bool = False
-    max_retries: int = 5
+    max_retries: int = 3
+    backup_model: str = ""  # used when the main model is overloaded or out of daily requests ("" = none)
+    merge_seconds: int = 15  # caption lines are merged into blocks this long before sending (0 = off)
 
     @classmethod
     def from_settings(cls, s: dict) -> "RunConfig":
@@ -113,7 +115,9 @@ class RunConfig:
             max_per_run=int(s.get("max_per_run", 20)),
             skip_existing=bool(s.get("skip_existing", True)),
             save_transcript=bool(s.get("save_transcript", False)),
-            max_retries=int(s.get("max_retries", 5)),
+            max_retries=int(s.get("max_retries", 3)),
+            backup_model=str(s.get("backup_model", "")).strip(),
+            merge_seconds=int(s.get("merge_seconds", 15)),
         )
 
 
@@ -138,6 +142,17 @@ BLOCKED_RE = re.compile(r"confirm you.{0,3}re not a bot|sign in to confirm|too m
                         r"rate.?limit", re.I)
 KEY_RE = re.compile(r"API key not valid|API_KEY_INVALID|API key expired|PERMISSION_DENIED|UNAUTHENTICATED", re.I)
 RETRYABLE_RE = re.compile(r"\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|timed? ?out", re.I)
+# "the model is busy" (as opposed to "you are sending too fast"): another model has its own capacity
+OVERLOADED_RE = re.compile(r"\b(500|502|503|504)\b|UNAVAILABLE|overloaded|INTERNAL", re.I)
+# Google's 429 answers say how long to wait, e.g. 'retryDelay': '37s'
+_RETRY_DELAY_RE = re.compile(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s", re.I)
+
+
+def retry_delay_seconds(msg: str) -> Optional[float]:
+    m = _RETRY_DELAY_RE.search(msg or "")
+    return float(m.group(1)) if m else None
+
+
 CAPTION_FILE_EXTS = (".vtt", ".srt", ".sbv", ".json3", ".json")
 
 
@@ -246,6 +261,39 @@ def _cue_lines(raw: str, time_re, hms) -> list[str]:
             continue
         last = text
         out.append(f"[{ts}] {text}")
+    return out
+
+
+_LINE_TS = re.compile(r"^\[(\d+):(\d{2}):(\d{2})\] (.*)$")
+
+
+def compact_lines(lines: list[str], seconds: int = 15) -> list[str]:
+    """Merge caption lines into one line per `seconds`-long block, keeping the block's first timestamp.
+
+    Auto-captions come as many short lines, and the "[HH:MM:SS] " prefix on each one is a large share of the
+    tokens sent to Gemini. Blocks of ~15 s cut the transcript size by roughly a third while keeping start
+    times accurate enough for chapters. Lines that don't carry a timestamp are kept as they are.
+    """
+    if seconds <= 0:
+        return list(lines)
+    out: list[str] = []
+    start, label, texts = None, "", []
+    for line in lines:
+        m = _LINE_TS.match(line)
+        if not m:
+            if texts:
+                out.append(f"[{label}] " + " ".join(texts))
+                start, texts = None, []
+            out.append(line)
+            continue
+        t = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+        if start is None or t - start >= seconds or t < start:
+            if texts:
+                out.append(f"[{label}] " + " ".join(texts))
+            start, label, texts = t, line[1:line.index("]")], []
+        texts.append(m.group(4))
+    if texts:
+        out.append(f"[{label}] " + " ".join(texts))
     return out
 
 
@@ -561,8 +609,11 @@ def _last_line(msg: str) -> str:
 
 class Runner:
     def __init__(self, cfg: RunConfig, urls_text: str, log: Callable, progress: Callable, status: Callable,
-                 stop: threading.Event, files: Optional[list[str]] = None):
+                 stop: threading.Event, files: Optional[list[str]] = None,
+                 on_gemini: Optional[Callable[[str, str], None]] = None):
         self.cfg, self.urls_text = cfg, urls_text or ""
+        # on_gemini(event, model): "sent" before every request, "out" when a model's daily limit is reached
+        self._on_gemini = on_gemini or (lambda event, model: None)
         self.files = list(files or [])
         # every message passes through redact(), so the API key can never end up in the activity log
         self.log = lambda msg, kind="info": log(redact(msg, cfg.api_key), kind)
@@ -570,6 +621,7 @@ class Runner:
         self.saved: list[str] = []
         self.needs_file: list[str] = []  # videos that can't be read logged out (age-restricted etc.)
         self._deno = find_deno()
+        self._model = cfg.model  # switches to cfg.backup_model for the rest of the run if the daily limit is hit
 
     # ---- plumbing
     def _check_stop(self):
@@ -666,8 +718,9 @@ class Runner:
         if self.cfg.save_transcript:
             out_path.with_suffix(".transcript.txt").write_text(transcript, encoding="utf-8")
         self.status(f"Asking Gemini: {title[:60]}")
-        self.log(f"Sending {len(lines)} caption lines to {self.cfg.model} ...")
-        text = self._ask_gemini(transcript)
+        sent = compact_lines(lines, self.cfg.merge_seconds)
+        self.log(f"Sending {len(sent)} transcript lines ({len(lines)} captions) to {self._model} ...")
+        text = self._ask_gemini("\n".join(sent))
         if text is None:
             self.log(f"{title[:60]}: nothing saved because the Gemini request failed (see above).", "error")
             return "failed"
@@ -763,14 +816,32 @@ class Runner:
             return "failed", True
         return self._finish(lines, title, Path(c.output_dir, f"{safe_filename(title)} [{vid}].txt")), True
 
+    def _switch_to_backup(self, why: str) -> bool:
+        b = self.cfg.backup_model
+        if not b or b == self._model:
+            return False
+        self.log(f"{why} Switching to the backup model {b}.", "warn")
+        self._model = b
+        return True
+
     def _ask_gemini(self, transcript: str) -> Optional[str]:
-        """The answer text, or None if the request failed (the reason is already logged)."""
+        """The answer text, or None if the request failed (the reason is already logged).
+
+        Every attempt counts against a free key's per-minute and per-day request limits, even when Gemini only
+        answers "busy", so attempts are kept few and far apart: Google's own suggested wait is used when it
+        gives one, otherwise the wait doubles each time. If the model stays overloaded, the backup model (which
+        has its own limits and capacity) is tried instead of hammering the same one.
+        """
         system = build_system_prompt(self.cfg.prompt, self.cfg.min_segment_minutes)
         daily_checked = False
-        for attempt in range(1, self.cfg.max_retries + 1):
+        overloaded = 0
+        attempt = 0
+        while attempt < self.cfg.max_retries:
+            attempt += 1
             self._check_stop()
             try:
-                return generate(self.cfg.api_key, self.cfg.model, system, transcript)
+                self._on_gemini("sent", self._model)
+                return generate(self.cfg.api_key, self._model, system, transcript)
             except Exception as e:  # noqa: BLE001
                 msg = str(e)
                 if is_tls_problem(e):
@@ -785,17 +856,54 @@ class Runner:
                         daily_checked = True
                         self.log("Gemini says a usage limit was reached. Waiting a minute to see whether it's the "
                                  "per-minute or the daily limit ...", "warn")
-                        self._sleep(65)
+                        self._sleep(max(65.0, retry_delay_seconds(msg) or 0))
                         continue
-                    raise GeminiDailyLimit(GEMINI_DAILY_MSG.format(model=self.cfg.model))
+                    self._on_gemini("out", self._model)
+                    if self._switch_to_backup(f"{self._model} has used up today's requests on this key."):
+                        daily_checked, overloaded, attempt = False, 0, 0  # the backup gets its own attempts
+                        continue
+                    raise GeminiDailyLimit(GEMINI_DAILY_MSG.format(model=self._model))
                 if RETRYABLE_RE.search(msg) and attempt < self.cfg.max_retries:
-                    wait = attempt * (20 if "429" in msg or "RESOURCE_EXHAUSTED" in msg else 10)
-                    self.log(f"Gemini busy (attempt {attempt}/{self.cfg.max_retries}). Retrying in {wait}s ...", "warn")
+                    if OVERLOADED_RE.search(msg):
+                        overloaded += 1
+                        if overloaded >= 2 and self.cfg.backup_model and self._model != self.cfg.backup_model:
+                            # just for this stream: the main model is usually back for the next one
+                            self.log(f"{self._model} is still overloaded; trying the backup model "
+                                     f"{self.cfg.backup_model} for this stream.", "warn")
+                            return self._ask_backup_once(system, transcript)
+                    wait = retry_delay_seconds(msg)
+                    if wait is None:
+                        wait = min(300.0, 30.0 * 2 ** (attempt - 1)) * random.uniform(0.8, 1.2)
+                    wait = min(max(wait, 5.0), 600.0)
+                    self.log(f"Gemini busy (attempt {attempt}/{self.cfg.max_retries}). Retrying in {wait:.0f}s ...",
+                             "warn")
                     self._sleep(wait)
                     continue
                 self.log(f"Gemini error: {msg[:300]}", "error")
                 return None
         return None
+
+    def _ask_backup_once(self, system: str, transcript: str) -> Optional[str]:
+        main, self._model = self._model, self.cfg.backup_model
+        try:
+            return self._ask_gemini_plain(system, transcript)
+        finally:
+            self._model = main
+
+    def _ask_gemini_plain(self, system: str, transcript: str) -> Optional[str]:
+        """One request to the current model; errors other than the run-stopping ones are logged, not retried."""
+        self._check_stop()
+        try:
+            self._on_gemini("sent", self._model)
+            return generate(self.cfg.api_key, self._model, system, transcript)
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            if is_tls_problem(e):
+                raise NetworkTrustProblem(TLS_PROBLEM_MSG.format(what="Google's Gemini"))
+            if KEY_RE.search(msg):
+                raise ApiKeyProblem(msg)
+            self.log(f"Gemini error ({self._model}): {msg[:300]}", "error")
+            return None
 
     # ---- main loop
     def run(self) -> dict:

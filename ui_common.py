@@ -122,6 +122,54 @@ def card(parent, title: str | None = None, subtitle: str | None = None, wrap: in
     return outer, inner
 
 
+def section(parent, title: str, subtitle: str | None = None, open_: bool = False, wrap: int = 760):
+    """A card whose body folds away (for settings that are rarely changed). Click the title to open/close.
+
+    Returns (outer, inner, set_open). Put widgets in `inner` with grid (column 1 stretches), like card().
+    """
+    outer = ctk.CTkFrame(parent, fg_color=CARD_BG, corner_radius=14, border_width=1, border_color=CARD_BORDER)
+    outer.grid_columnconfigure(0, weight=1)
+    state = {"open": open_}
+    head = ctk.CTkButton(outer, text=title, anchor="w", height=40, corner_radius=10, fg_color="transparent",
+                         hover_color=NAV_HOVER, text_color=TEXT, font=font(16, "bold"),
+                         command=lambda: set_open(not state["open"]))
+    head.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
+    if subtitle:
+        hint(outer, subtitle, wrap=wrap).grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 0))
+    spacer = ctk.CTkFrame(outer, fg_color="transparent", height=12)
+    spacer.grid(row=2, column=0, sticky="ew")
+    inner = ctk.CTkFrame(outer, fg_color="transparent")
+    inner.grid(row=3, column=0, sticky="nsew", padx=20, pady=(4, 18))
+    inner.grid_columnconfigure(1, weight=1)
+
+    def set_open(value: bool):
+        state["open"] = bool(value)
+        head.configure(text=("▾   " if value else "▸   ") + title)
+        if value:
+            inner.grid()
+        else:
+            inner.grid_remove()
+
+    set_open(open_)
+    return outer, inner, set_open
+
+
+def help_toggle(parent, target) -> ctk.CTkButton:
+    """Small '?' button that shows or hides `target` (a help line that starts hidden)."""
+    target.grid_remove()
+    shown = [False]
+
+    def flip():
+        shown[0] = not shown[0]
+        if shown[0]:
+            target.grid()
+        else:
+            target.grid_remove()
+
+    return ctk.CTkButton(parent, text="?", width=22, height=22, corner_radius=11, fg_color=SECONDARY,
+                         hover_color=SECONDARY_HOVER, text_color=MUTED, font=font(12, "bold"), command=flip)
+
+
 def work_area(win) -> tuple[int, int, int, int]:
     """(left, top, width, height) in screen pixels of the usable desktop (without the taskbar)."""
     if sys.platform.startswith("win"):

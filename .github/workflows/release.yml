@@ -19,23 +19,38 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-python@v6
+      # actions are pinned to exact commits (Dependabot keeps them updated) so a moved tag can't change the build
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
         with:
-          python-version: "3.12"
+          persist-credentials: false
 
-      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          # 3.12 no longer gets Windows builds of its security fixes (it stays at 3.12.10), so use a
+          # version that still does. The app ships this interpreter inside the exe.
+          python-version: "3.14"
+          check-latest: true
+
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed  # v2.0.5
         with:
           deno-version: v2.x
 
       - name: Install packages
         shell: pwsh
         run: |
+          # refuse an interpreter without the October 2026 security fixes (CVE-2026-115557, CVE-2026-114583)
+          python -c "import sys; assert sys.version_info >= (3, 14, 10), sys.version"
           python -m pip install --upgrade pip
           pip install --upgrade -r requirements.txt
-          python -c "import yt_dlp, yt_dlp_ejs, google.genai, customtkinter, PIL"
+          python -c "import yt_dlp, yt_dlp_ejs, google.genai, customtkinter, PIL, tzdata"
           pip freeze > build-versions.txt
+          "# built with $(python --version)" | Out-File -Append -Encoding ascii build-versions.txt
+
+      - name: Check packages for known vulnerabilities
+        shell: pwsh
+        run: |
+          pip install pip-audit
+          pip-audit -r build-versions.txt --strict
 
       - name: Add the repo name (for the in-app update notice)
         shell: pwsh
@@ -70,7 +85,7 @@ jobs:
           pyinstaller --noconfirm --clean --windowed --onedir --name StreamTimestamper `
             --icon assets\icon.ico --version-file version_info.txt --add-data "assets;assets" `
             --collect-all customtkinter --collect-all yt_dlp --collect-all yt_dlp_ejs `
-            --collect-all google.genai --collect-all certifi `
+            --collect-all google.genai --collect-all certifi --collect-data tzdata `
             --add-binary "$deno;." app.py
           if (-not (Test-Path dist\StreamTimestamper\StreamTimestamper.exe)) { throw "Build failed: no exe produced" }
 
@@ -91,7 +106,7 @@ jobs:
           "SHA-256: $hash" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
       - name: Attest build provenance
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4
         with:
           subject-path: ${{ env.ZIP }}
 
@@ -105,7 +120,7 @@ jobs:
 
       - name: Keep files from a test run
         if: github.event_name != 'release'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
         with:
           name: test-build
           path: |
