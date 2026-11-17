@@ -23,7 +23,9 @@ import runlog  # noqa: E402
 import settings as store  # noqa: E402
 import ui_common as ui  # noqa: E402
 import updates  # noqa: E402
+import transcribe  # noqa: E402
 import usage  # noqa: E402
+import worklist  # noqa: E402
 from version import GITHUB_REPO  # noqa: E402
 from wizard import CaptionFileHelp, SetupWizard  # noqa: E402
 
@@ -34,12 +36,16 @@ COOLDOWN_HOURS = 6
 MIN_W, MIN_H = 900, 520  # smallest window (logical px): fits 1366x768 laptops at 125% scaling
 SPLIT_TOP_MIN, SPLIT_BOTTOM_MIN = 64, 200  # Run page: smallest links area / controls + Activity area
 MAX_LOG_LINES = 5000
-NAV = [("run", "▶", "Run"), ("prompt", "✎", "Prompt"), ("results", "☰", "Results"), ("settings", "⚙", "Settings")]
+NAV = [("run", "▶", "Run"), ("queue", "⏳", "Queue"), ("prompt", "✎", "Prompt"), ("results", "☰", "Results"),
+       ("settings", "⚙", "Settings")]
+AUTO_TICK_MS = 60_000  # how often the Queue page looks for work while the app is open
 PAGE_TEXT = {
     "run": ("Run", "Paste stream links (or add caption files) and press Start."),
     "prompt": ("Prompt", "Tell the AI what to look for and how each line should look."),
     "results": ("Results", "Read and copy what the app has saved."),
     "settings": ("Settings", "The essentials are at the top. Click a folded section to open it."),
+    "queue": ("Queue", "Streams the app finishes on its own while it's open: new ones as soon as YouTube has "
+                       "captions, and old ones a few per day."),
 }
 
 
@@ -67,6 +73,7 @@ class App(ctk.CTk):
         self._result_paths: list[str] = []
         self._result_buttons: list[ctk.CTkButton] = []
         self._selected_result = ""
+        self._ts_tags: list[str] = []
         self._pending_select = ""
         self.caption_files: list[str] = []
         self._log_lines: list[tuple[str, str]] = []  # (line, level) of the current/last run
@@ -74,6 +81,9 @@ class App(ctk.CTk):
         self.runlog = runlog.RunLog()
         self._split_placed = False
         self._split_h = 0
+        self._auto_run = False  # the current run was started by the Queue page
+        self._transcribing = False
+        self._backlog_listing = False
         self._split_before = 0
         self._split_user_moved = False
 
@@ -87,6 +97,8 @@ class App(ctk.CTk):
         if not self.s.get("setup_done"):
             self.after(600, self.open_wizard)
         self.after(1500, self._startup_update_check)
+        self.after(2500, self._startup_unfinished_transcripts)
+        self.after(5000, self._auto_tick)
 
     # ================================================================== variables
     def _init_vars(self):
@@ -106,6 +118,10 @@ class App(ctk.CTk):
         self.v_retries = sv(value=n(s["max_retries"]))
         self.v_backup = sv(value=s.get("backup_model", "") or NO_BACKUP)
         self.v_merge = sv(value=n(s.get("merge_seconds", 15)))
+        self.v_auto = bv(value=bool(s.get("auto_runs", True)))
+        self.v_backlog_url = sv(value="")
+        self.v_backlog_day = sv(value=n(s.get("backlog_per_day", worklist.BACKLOG_PER_DAY)))
+        self.v_whisper = sv(value=s.get("whisper_model") or transcribe.DEFAULT_MODEL)
         self.v_skip = bv(value=s["skip_existing"])
         self.v_raw = bv(value=s["save_transcript"])
         self.v_appearance = sv(value=str(s.get("appearance", "System")).capitalize())
@@ -135,7 +151,8 @@ class App(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self._build_sidebar()
-        builders = {"run": self._build_run, "prompt": self._build_prompt, "results": self._build_results,
+        builders = {"run": self._build_run, "queue": self._build_queue, "prompt": self._build_prompt,
+                    "results": self._build_results,
                     "settings": self._build_settings}
         for key, build in builders.items():
             title, sub = PAGE_TEXT[key]
@@ -194,6 +211,8 @@ class App(ctk.CTk):
         self.current_page = key
         if key == "results":
             self.refresh_results()
+        if key == "queue":
+            self.refresh_queue()
         self.refresh_status()
 
     # ------------------------------------------------------------------ Run page
@@ -252,6 +271,8 @@ class App(ctk.CTk):
             row=0, column=0)
         ui.button(ff, "How?", self.show_caption_help, kind="ghost", width=50, height=32).grid(row=0, column=1,
                                                                                             padx=4)
+        ui.button(ff, "Transcribe a recording…", self.transcribe_recording, kind="secondary", height=32).grid(
+            row=0, column=5, padx=(10, 0))
         self.files_lbl = ui.label(ff, "", 13, color=ui.MUTED, wrap=320)
         self.files_lbl.grid(row=0, column=2, sticky="w", padx=4)
         self.btn_clear_files = ui.button(ff, "Clear", self.clear_caption_files, kind="ghost", width=60, height=32)
@@ -388,6 +409,204 @@ class App(ctk.CTk):
         if self._split_before and not self._split_user_moved:
             self._place_split(self._split_before)
         self._split_before = 0
+
+    # ------------------------------------------------------------------ Queue page
+    def _build_queue(self, page):
+        sc = ui.ScrollFrame(page, fg_color="transparent")
+        sc.grid(row=1, column=0, sticky="nsew", padx=18, pady=(12, 16))
+        sc.grid_columnconfigure(0, weight=1)
+
+        o, i = ui.card(sc, "Automatic runs")
+        o.grid(row=0, column=0, sticky="ew", padx=14, pady=(0, 14))
+        ctk.CTkSwitch(i, text="Run the lists below on their own while the app is open", variable=self.v_auto,
+                      font=ui.font(14), command=self._on_auto_toggle).grid(row=0, column=0, columnspan=2, sticky="w")
+        self.queue_status = ui.label(i, "", 13, color=ui.MUTED, wrap=700)
+        self.queue_status.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        o, i = ui.card(sc, "Waiting for captions",
+                       "Streams that were still live, or had no captions yet, when you ran them. Checked about once "
+                       "an hour; dropped after 2 days.")
+        o.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 14))
+        bf = ctk.CTkFrame(i, fg_color="transparent")
+        bf.grid(row=0, column=0, columnspan=2, sticky="w")
+        ui.button(bf, "Check now", self.check_waiting_now, kind="secondary", height=32).pack(side="left")
+        ui.button(bf, "Clear list", self.clear_waiting, kind="ghost", height=32).pack(side="left", padx=8)
+        self.waiting_rows = ctk.CTkFrame(i, fg_color="transparent")
+        self.waiting_rows.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.waiting_rows.grid_columnconfigure(0, weight=1)
+
+        o, i = ui.card(sc, "Backlog",
+                       "Older streams from a channel or playlist, done a few per day so the free limits last. Waiting "
+                       "streams always go first. Streams that already have a result are left out.")
+        o.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 14))
+        af = ctk.CTkFrame(i, fg_color="transparent")
+        af.grid(row=0, column=0, columnspan=2, sticky="ew")
+        af.grid_columnconfigure(0, weight=1)
+        ctk.CTkEntry(af, textvariable=self.v_backlog_url, height=36, font=ui.font(14)).grid(row=0, column=0,
+                                                                                           sticky="ew")
+        self.btn_backlog_add = ui.button(af, "Add channel or playlist", self.add_backlog, width=200)
+        self.btn_backlog_add.grid(row=0, column=1, padx=(10, 0))
+        df = ctk.CTkFrame(i, fg_color="transparent")
+        df.grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ctk.CTkEntry(df, textvariable=self.v_backlog_day, width=70, height=32, font=ui.font(14)).pack(side="left")
+        ui.label(df, "  backlog streams per day", 14).pack(side="left")
+        self.backlog_rows = ctk.CTkFrame(i, fg_color="transparent")
+        self.backlog_rows.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.backlog_rows.grid_columnconfigure(0, weight=1)
+
+    def refresh_queue(self):
+        for frame in (self.waiting_rows, self.backlog_rows):
+            for w in frame.winfo_children():
+                w.destroy()
+        items = worklist.waiting(self.s)
+        if not items:
+            ui.label(self.waiting_rows, "Nothing waiting.", 13, color=ui.MUTED).grid(row=0, column=0, sticky="w")
+        for r, w in enumerate(items):
+            nxt = float(w.get("next_check", 0))
+            when = "next check: soon" if nxt <= time.time() else f"next check {time.strftime('%H:%M', time.localtime(nxt))}"
+            ui.label(self.waiting_rows, f"{w.get('title') or w['id']}   ·   {when}", 13, wrap=560).grid(
+                row=r, column=0, sticky="w", pady=2)
+            ui.button(self.waiting_rows, "Remove", lambda v=w["id"]: self.remove_waiting(v), kind="ghost", width=70,
+                      height=26).grid(row=r, column=1)
+        sources = worklist.backlog(self.s)
+        if not sources:
+            ui.label(self.backlog_rows, "No backlog yet. Paste a channel or playlist link above.", 13,
+                     color=ui.MUTED).grid(row=0, column=0, sticky="w")
+        for r, b in enumerate(sources):
+            left = len(b.get("pending", []))
+            done, failed = int(b.get("done", 0)), int(b.get("failed", 0))
+            text = f"{b.get('label') or b['url']}   ·   {done} done" + (f", {failed} failed" if failed else "") + \
+                   f", {left} to go"
+            ui.label(self.backlog_rows, text, 13, wrap=560).grid(row=r, column=0, sticky="w", pady=2)
+            ui.button(self.backlog_rows, "Remove", lambda u=b["url"]: self.remove_backlog(u), kind="ghost", width=70,
+                      height=26).grid(row=r, column=1)
+        self.queue_status.configure(text=self._queue_status_text())
+
+    def _queue_status_text(self) -> str:
+        s = self.s
+        if not self.v_auto.get():
+            return "Off: nothing runs on its own. Lists are kept."
+        if s.get("files_only"):
+            return "Paused: 'Caption files only' is on in Settings, so YouTube isn't contacted."
+        if worklist.paused_today(s):
+            return "Paused until midnight Pacific time: Gemini's daily limit was reached."
+        since = time.time() - float(s.get("last_blocked") or 0)
+        if since < COOLDOWN_HOURS * 3600:
+            return f"Paused for about {int((COOLDOWN_HOURS * 3600 - since) // 3600) + 1} h: YouTube limited this " \
+                   "connection recently."
+        left = worklist.backlog_left_today(s)
+        parts = [f"{len(worklist.waiting(s))} waiting"]
+        if worklist.backlog(s):
+            parts.append(f"{left} more backlog stream{'s' if left != 1 else ''} today")
+        return "On: " + ", ".join(parts) + ". Keep the app open (minimized is fine)."
+
+    def _on_auto_toggle(self):
+        self.s["auto_runs"] = bool(self.v_auto.get())
+        self.persist()
+        self.refresh_queue()
+
+    def check_waiting_now(self):
+        worklist.check_all_now(self.s)
+        self.refresh_queue()
+        self._maybe_auto_run(manual=True)
+
+    def clear_waiting(self):
+        if worklist.waiting(self.s) and messagebox.askyesno(APP_NAME, "Remove every stream from the waiting list?"):
+            self.s["waiting"] = []
+            self.persist()
+            self.refresh_queue()
+
+    def remove_waiting(self, vid: str):
+        worklist.remove_waiting(self.s, [vid])
+        self.persist()
+        self.refresh_queue()
+
+    def remove_backlog(self, url: str):
+        if messagebox.askyesno(APP_NAME, "Remove this channel/playlist from the backlog? Results already saved "
+                                         "are kept."):
+            worklist.remove_backlog(self.s, url)
+            self.persist()
+            self.refresh_queue()
+
+    def add_backlog(self):
+        line = self.v_backlog_url.get().strip()
+        if not line or self._backlog_listing:
+            return
+        if self.collect() is None:
+            return
+        if self.s.get("files_only"):
+            messagebox.showinfo(APP_NAME, "'Caption files only' is on in Settings, so the app can't list a channel.")
+            return
+        kind, _ = core.classify_url(line)
+        if kind not in ("channel", "playlist"):
+            messagebox.showinfo(APP_NAME, "Paste a channel or playlist link here. Single streams go on the Run page.")
+            return
+        try:
+            cfg = core.RunConfig.from_settings(self.s)
+        except ValueError as e:
+            messagebox.showerror(APP_NAME, str(e))
+            return
+        self._backlog_listing = True
+        self.btn_backlog_add.configure(state="disabled", text="Listing videos…")
+
+        def work():
+            try:
+                url, videos = core.list_videos(cfg, line)
+                self.q.put(("backlog_listed", url, videos))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("backlog_error", str(e), isinstance(e, core.YouTubeBlocked)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_backlog_listed(self, url: str, videos: list):
+        self._backlog_listing = False
+        self.btn_backlog_add.configure(state="normal", text="Add channel or playlist")
+        out = self.s.get("output_dir", "")
+        have = [v for v, _ in videos if core.find_existing_output(out, v)]
+        label = url.replace(core.YT_BASE + "/", "")
+        n = worklist.add_backlog(self.s, url, label, videos, skip_ids=have)
+        self.v_backlog_url.set("")
+        self.persist()
+        self.refresh_queue()
+        messagebox.showinfo(APP_NAME, f"Added {n} stream{'s' if n != 1 else ''} from {label} to the backlog"
+                            + (f" ({len(have)} already had results)." if have else ".")
+                            + f"\n\nThe app does {worklist.per_day(self.s)} per day while it's open.")
+
+    def _on_backlog_error(self, msg: str, blocked: bool):
+        self._backlog_listing = False
+        self.btn_backlog_add.configure(state="normal", text="Add channel or playlist")
+        if blocked:
+            self.s["last_blocked"] = time.time()
+            self.persist()
+            msg = "YouTube is limiting requests from this connection right now. Try again in a few hours."
+        messagebox.showerror(APP_NAME, msg)
+
+    # ---- the automatic runs
+    def _auto_tick(self):
+        self.after(AUTO_TICK_MS, self._auto_tick)
+        try:
+            self._maybe_auto_run()
+        except Exception as e:  # noqa: BLE001  (never let the timer die)
+            self._append_log(f"Queue: {e}", "warn")
+
+    def _busy(self) -> bool:
+        return bool((self.worker and self.worker.is_alive()) or self._transcribing)
+
+    def _maybe_auto_run(self, manual: bool = False):
+        s = self.s
+        for w in worklist.expire_waiting(s):
+            self._append_log(f"Stopped waiting for captions on '{w.get('title') or w['id']}' after 2 days. "
+                             "Use a caption file or a transcript for it.", "warn")
+        if self.current_page == "queue":
+            self.refresh_queue()
+        if not (self.v_auto.get() or manual) or self._busy() or s.get("files_only") or not s.get("api_key"):
+            return False
+        if time.time() - float(s.get("last_blocked") or 0) < COOLDOWN_HOURS * 3600:
+            return False
+        ids = worklist.plan_auto_run(s, int(s.get("max_per_run") or 0))
+        if not ids:
+            return False
+        return self.start(auto_ids=ids)
 
     # ------------------------------------------------------------------ Prompt page
     def _build_prompt(self, page):
@@ -547,6 +766,11 @@ class App(ctk.CTk):
         self.btn_open_res.pack(side="left", padx=10)
         self.btn_show_res = ui.button(vb, "Show in folder", self.show_result, kind="secondary", state="disabled")
         self.btn_show_res.pack(side="left")
+        self.btn_clips = ui.button(vb, "Save clip list (.csv)", self.save_clip_list, kind="secondary",
+                                   state="disabled")
+        self.btn_clips.pack(side="left", padx=10)
+        self.view_hint = ui.label(vo, "", 12, color=ui.MUTED)
+        self.view_hint.grid(row=3, column=0, sticky="w", padx=20, pady=(0, 14))
         self.view_box = ctk.CTkTextbox(vo, wrap="word", font=ui.mono(13), state="disabled", border_width=1,
                                        border_color=ui.CARD_BORDER)
         self.view_box.grid(row=2, column=0, sticky="nsew", padx=20, pady=(12, 20))
@@ -651,6 +875,14 @@ class App(ctk.CTk):
         srow(i, r, "Merge captions into", self._with_unit(i, self.v_merge, "second blocks (0 = off)"),
              "Fewer, longer lines use fewer tokens. Timestamps can be up to this many seconds early. 15 is a good "
              "balance; up to 60 is allowed.")
+
+        i = add_card("Transcribing recordings", "Turn a recording on this PC into captions with Whisper, with no "
+                                                "wait for YouTube's captions.", folded=True)
+        srow(i, 0, "Speech model", ctk.CTkOptionMenu(i, values=list(transcribe.MODELS), variable=self.v_whisper,
+                                                       width=130, height=34),
+             "base: " + transcribe.MODELS["base"][1] + ". small: " + transcribe.MODELS["small"][1] + ". Each is "
+             "downloaded once from Hugging Face the first time it's used (base " + transcribe.MODELS["base"][0] +
+             ", small " + transcribe.MODELS["small"][0] + "). Uses the Caption language above.")
 
         # ---- app
         i = add_card("App")
@@ -787,6 +1019,110 @@ class App(ctk.CTk):
         self.files_lbl.configure(text=f"{n} file{'s' if n != 1 else ''}: {names}{more}")
         self.btn_clear_files.grid()
 
+    # ================================================================== transcribing a recording
+    def transcribe_recording(self):
+        if not transcribe.available():
+            messagebox.showinfo(APP_NAME, "Transcribing isn't included in this copy of the app. Download the newest "
+                                          "version from the project's Releases page.")
+            return
+        if self._busy():
+            messagebox.showinfo(APP_NAME, "Wait for the current run to finish first (or press Stop).")
+            return
+        exts = " ".join("*" + e for e in transcribe.MEDIA_EXTS)
+        path = filedialog.askopenfilename(title="Choose a stream recording (video or audio)",
+                                          filetypes=[("Recordings", exts), ("All files", "*.*")])
+        if path:
+            self._start_transcription(path)
+
+    def _start_transcription(self, path: str):
+        if self.collect() is None:
+            return
+        out = self.s["output_dir"]
+        problem = core.check_writable(out)
+        if problem:
+            messagebox.showerror(APP_NAME, problem)
+            return
+        model = self.s.get("whisper_model") or transcribe.DEFAULT_MODEL
+        if not transcribe.model_downloaded(model):
+            size = transcribe.MODELS.get(model, ("", ""))[0]
+            if not messagebox.askyesno(
+                    APP_NAME, f"Transcribing needs Whisper's '{model}' speech model ({size}). It's downloaded once "
+                              "from Hugging Face (huggingface.co) and kept in the app's settings folder.\n\n"
+                              "Download it now?"):
+                return
+        self._transcribing = True
+        self.stop_event.clear()
+        self._clear_log()
+        self.runlog.start([f"{APP_NAME} {ui.VERSION} - transcribing {os.path.basename(path)} "
+                           f"({time.strftime('%Y-%m-%d %H:%M:%S')})", f"Model: {model}", ""])
+        self.btn_start.configure(state="disabled")
+        self.btn_stop.configure(state="normal")
+        self.hide_banner()
+        self.progress.set(0)
+        self._t_started = (time.time(), None)
+        self._append_log(f"Transcribing {os.path.basename(path)} on this PC with Whisper ({model}). It's saved as it "
+                         "goes, so if the app is closed it continues where it stopped next time.", "info")
+        lang = self.s.get("caption_lang", "en")
+        stop = self.stop_event
+
+        def work():
+            try:
+                if not transcribe.model_downloaded(model):
+                    self.q.put(("status", f"Downloading the '{model}' speech model (once)…"))
+                self.q.put(("status", "Loading the speech model…"))
+                m = transcribe.load_model(model)
+                srt = transcribe.transcribe(path, out, model=m, model_name=model, language=lang, stop=stop,
+                                            progress=lambda d, t: self.q.put(("tprogress", d, t)),
+                                            log=lambda msg: self.q.put(("log", msg, "info")))
+                self.q.put(("transcribed", path, str(srt)))
+            except transcribe.Stopped:
+                self.q.put(("transcribe_stopped", path))
+            except Exception as e:  # noqa: BLE001
+                self.q.put(("transcribe_error", path, str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_tprogress(self, done: float, total):
+        self.progress.set(done / total if total else 0)
+        started, first_done = self._t_started
+        if first_done is None:  # measure speed from where this session began (it may be resuming)
+            self._t_started = (time.time(), done)
+            return
+        rate = (done - first_done) / max(1.0, time.time() - started)
+        left = f", about {int((total - done) / rate / 60) + 1} min left" if total and rate > 0 else ""
+        self.status_lbl.configure(text=f"Transcribing: {core.fmt_ts(int(done))} of "
+                                       f"{core.fmt_ts(int(total or 0))}{left}")
+
+    def _end_transcription(self, text: str, level: str):
+        self._transcribing = False
+        self.btn_start.configure(state="normal")
+        self.btn_stop.configure(state="disabled")
+        self.status_lbl.configure(text=text.split(". ")[0] + ".")
+        self._append_log(text, level)
+        self.runlog.close()
+
+    def _on_transcribed(self, path: str, srt: str):
+        self.progress.set(1)
+        if srt not in self.caption_files:
+            self.caption_files.append(srt)
+        self._refresh_files_label()
+        self._end_transcription(f"Transcript saved: {srt}. It's been added to the caption files above: press "
+                                "Start to find the segments (the file stays there for later, too).", "ok")
+
+    def _startup_unfinished_transcripts(self):
+        try:
+            items = transcribe.unfinished(self.s.get("output_dir", ""))
+        except Exception:  # noqa: BLE001
+            return
+        if not items or not transcribe.available() or getattr(self, "_banner_visible", False):
+            return
+        info = items[0]
+        name = os.path.basename(info["source"])
+        total = info.get("duration")
+        where = core.fmt_ts(int(info.get("done_until", 0))) + (f" of {core.fmt_ts(int(total))}" if total else "")
+        self.show_banner(f"Transcribing {name} stopped at {where}. The part done so far is saved.", "warn",
+                         "Continue", lambda: (self.hide_banner(), self._start_transcription(info["source"])))
+
     # ================================================================== wizard
     def open_wizard(self, only: str | None = None):
         if self.wizard is not None and self.wizard.winfo_exists():
@@ -822,6 +1158,7 @@ class App(ctk.CTk):
             s["max_videos"] = num(self.v_max, "Newest videos", int)
             s["max_retries"] = max(1, num(self.v_retries, "Retries", int))
             s["merge_seconds"] = min(60, num(self.v_merge, "Merge captions into", int))
+            s["backlog_per_day"] = num(self.v_backlog_day, "Backlog streams per day", int)
         except ValueError as e:
             messagebox.showerror(APP_NAME, str(e))
             return None
@@ -837,6 +1174,8 @@ class App(ctk.CTk):
         s["appearance"] = self.v_appearance.get()
         s["files_only"] = bool(self.v_files_only.get())
         s["check_updates"] = bool(self.v_check_updates.get())
+        s["auto_runs"] = bool(self.v_auto.get())
+        s["whisper_model"] = self.v_whisper.get() if self.v_whisper.get() in transcribe.MODELS else "base"
         adv = bool(self.v_adv.get())
         s["prompt_mode"] = "advanced" if adv else "guided"
         s["form"] = self.get_form()
@@ -1111,10 +1450,65 @@ class App(ctk.CTk):
         self.view_box.configure(state="normal")
         self.view_box.delete("1.0", "end")
         self.view_box.insert("1.0", text)
+        n = self._link_timestamps(text, core.video_id_from_result(self._selected_result) if text else "")
         self.view_box.configure(state="disabled")
         state = "normal" if text else "disabled"
-        for b in (self.btn_copy, self.btn_open_res, self.btn_show_res):
+        for b in (self.btn_copy, self.btn_open_res, self.btn_show_res, self.btn_clips):
             b.configure(state=state)
+        self.view_hint.configure(text="Click a time to open the stream at that moment." if n else "")
+
+    def _link_timestamps(self, text: str, video_id: str) -> int:
+        """Make each line's start time a link to that moment of the stream. Returns how many were linked."""
+        box = self.view_box
+        for tag in self._ts_tags:
+            box.tag_delete(tag)
+        self._ts_tags = []
+        if not video_id:
+            return 0
+        box.tag_config("ts_link", foreground=ui.pick(ui.ACCENT), underline=True)
+        for row, line in enumerate(text.splitlines(), 1):
+            stripped = line.lstrip()
+            m = core.RESULT_TS_RE.match(stripped)
+            if not m:
+                continue
+            col = len(line) - len(stripped)
+            tag = f"ts{len(self._ts_tags)}"
+            url = f"https://www.youtube.com/watch?v={video_id}&t={core.ts_seconds(m.group(1))}s"
+            a, b = f"{row}.{col}", f"{row}.{col + len(m.group(1))}"
+            box.tag_add("ts_link", a, b)
+            box.tag_add(tag, a, b)
+            box.tag_bind(tag, "<Button-1>", lambda e, u=url: ui.open_url(u))
+            box.tag_bind(tag, "<Enter>", lambda e: self._view_cursor("hand2"))
+            box.tag_bind(tag, "<Leave>", lambda e: self._view_cursor(""))
+            self._ts_tags.append(tag)
+        return len(self._ts_tags)
+
+    def _view_cursor(self, cursor: str):
+        try:
+            self.view_box._textbox.configure(cursor=cursor or "xterm")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def save_clip_list(self):
+        path = self._selected_result
+        if not path:
+            return
+        text = self.view_box.get("1.0", "end")
+        rows = core.clip_rows(text, core.video_id_from_result(path))
+        if not rows:
+            messagebox.showinfo(APP_NAME, "This result has no timestamped segments to put in a clip list.")
+            return
+        csv_path = os.path.splitext(path)[0] + " - clips.csv"
+        try:
+            core.write_clip_csv(csv_path, rows)
+        except OSError as e:
+            messagebox.showerror(APP_NAME, f"Couldn't save the clip list: {e}")
+            return
+        self._append_log(f"Clip list saved: {csv_path}", "ok")
+        if messagebox.askyesno(APP_NAME, f"Saved {len(rows)} clips to:\n{os.path.basename(csv_path)}\n\n"
+                                         "It opens in Excel, Google Sheets or any spreadsheet app. Show it in its "
+                                         "folder?"):
+            ui.show_in_folder(csv_path)
 
     def copy_result(self):
         text = self.view_box.get("1.0", "end").rstrip("\n")
@@ -1132,30 +1526,38 @@ class App(ctk.CTk):
             ui.show_in_folder(self._selected_result)
 
     # ================================================================== run control
-    def start(self):
-        if self.worker and self.worker.is_alive():
-            return
+    def start(self, auto_ids: list[str] | None = None) -> bool:
+        """Start a run. auto_ids: video ids from the Queue page (no pop-ups; the links box is left alone)."""
+        auto = auto_ids is not None
+        if self._busy():
+            if not auto and self._transcribing:
+                messagebox.showinfo(APP_NAME, "A recording is being transcribed. Wait for it, or press Stop.")
+            return False
         if self.collect() is None:
-            return
+            return False
         if not self.s["api_key"]:
-            if messagebox.askyesno(APP_NAME, "You haven't added your Gemini API key yet. Set it up now?"):
+            if not auto and messagebox.askyesno(APP_NAME, "You haven't added your Gemini API key yet. Set it up now?"):
                 self.open_wizard("gemini")
-            return
+            return False
         self.refresh_status()
         if self.s["prompt_mode"] == "guided":
             errs = pb.validate_form(self.s["form"])
             if errs:
-                self.show_page("prompt")
-                messagebox.showinfo(APP_NAME, "\n".join(errs))
-                return
+                if not auto:
+                    self.show_page("prompt")
+                    messagebox.showinfo(APP_NAME, "\n".join(errs))
+                return False
         files_only = bool(self.s.get("files_only"))
-        urls = "" if files_only else self.urls_box.get("1.0", "end")
-        files = [f for f in self.caption_files if os.path.isfile(f)]
+        if auto:
+            urls, files = "\n".join(auto_ids), []
+        else:
+            urls = "" if files_only else self.urls_box.get("1.0", "end")
+            files = [f for f in self.caption_files if os.path.isfile(f)]
         if not urls.strip() and not files:
             messagebox.showinfo(APP_NAME, "Add a caption file first." if files_only else
                                 "Paste at least one YouTube link or add a caption file first.")
-            return
-        if urls.strip():
+            return False
+        if urls.strip() and not auto:
             since = time.time() - float(self.s.get("last_blocked") or 0)
             if since < COOLDOWN_HOURS * 3600:
                 mins = int(since // 60)
@@ -1163,17 +1565,21 @@ class App(ctk.CTk):
                 if not messagebox.askyesno(
                         APP_NAME, f"YouTube limited this internet connection {ago} ago. Giving it a few more hours "
                                   f"is safer.\n\nCaption files still work any time.\n\nTry YouTube links anyway?"):
-                    return
+                    return False
         self.persist()
         try:
             cfg = core.RunConfig.from_settings(self.s)
         except ValueError as e:
-            messagebox.showerror(APP_NAME, str(e))
-            return
+            if not auto:
+                messagebox.showerror(APP_NAME, str(e))
+            return False
+        self._auto_run = auto
 
         self.stop_event.clear()
         self._clear_log()
         self.runlog.start(self._log_header(cfg, urls, files))
+        if auto:
+            self._append_log(f"Automatic run from the Queue page: {len(auto_ids)} stream(s).", "info")
         self.progress.set(0)
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
@@ -1197,11 +1603,13 @@ class App(ctk.CTk):
 
         self.worker = threading.Thread(target=work, daemon=True)
         self.worker.start()
+        return True
 
     def stop(self):
         self.stop_event.set()
         self.btn_stop.configure(state="disabled")
-        self.status_lbl.configure(text="Stopping after the current step ...")
+        self.status_lbl.configure(text="Stopping after the current step ..." if not self._transcribing else
+                                  "Stopping: saving what's done so far ...")
 
     # ================================================================== queue -> UI
     def _config_log_tags(self):
@@ -1324,6 +1732,19 @@ class App(ctk.CTk):
                     self._on_finished(item[1])
                 elif kind == "update":
                     self._on_update_result(item[1], item[2], item[3])
+                elif kind == "tprogress":
+                    self._on_tprogress(item[1], item[2])
+                elif kind == "transcribed":
+                    self._on_transcribed(item[1], item[2])
+                elif kind == "transcribe_stopped":
+                    self._end_transcription("Stopped. The part done so far is saved: transcribe the same file "
+                                            "again (or click Continue next time the app opens) to carry on.", "warn")
+                elif kind == "transcribe_error":
+                    self._end_transcription(f"Couldn't transcribe {os.path.basename(item[1])}: {item[2]}", "error")
+                elif kind == "backlog_listed":
+                    self._on_backlog_listed(item[1], item[2])
+                elif kind == "backlog_error":
+                    self._on_backlog_error(item[1], item[2])
         except queue.Empty:
             pass
         self.after(100, self._poll)
@@ -1338,11 +1759,18 @@ class App(ctk.CTk):
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
         self._restore_links()
-        text = f"Finished: {sm['done']} saved, {sm['skipped']} skipped, {sm['failed']} failed."
+        auto, self._auto_run = self._auto_run, False
+        text = f"Finished: {sm['done']} saved, {sm['skipped']} skipped, {sm['failed']} failed"
+        if sm.get("waiting"):
+            text += f", {sm['waiting']} waiting for captions"
+        text += "."
         if sm["stopped"]:
             text = "Stopped. " + text
+        if auto:
+            text = "Automatic run: " + text
         self.status_lbl.configure(text=text)
         self._append_log(text, "ok" if not sm["failed"] else "warn")
+        self._update_worklist(sm)
         if sm.get("saved"):
             self._pending_select = sm["saved"][0]
             self.btn_view.configure(fg_color=ui.ACCENT, hover_color=ui.ACCENT_HOVER, text_color="#ffffff",
@@ -1357,21 +1785,42 @@ class App(ctk.CTk):
                              "Your YouTube account isn't involved (the app never signs in). Wait several hours "
                              "before using links again, or use caption files.", "error",
                              "Use caption files", self.show_caption_help)
-            messagebox.showwarning(
-                APP_NAME, "YouTube is limiting requests from this internet connection, so the app stopped right "
-                          "away instead of retrying.\n\nYour YouTube account isn't involved: the app never signs "
-                          "in.\n\nWait several hours (or until tomorrow) before using links again. Caption "
-                          "files from YouTube Studio work in the meantime.")
+            if not auto:
+                messagebox.showwarning(
+                    APP_NAME, "YouTube is limiting requests from this internet connection, so the app stopped "
+                              "right away instead of retrying.\n\nYour YouTube account isn't involved: the app never "
+                              "signs in.\n\nWait several hours (or until tomorrow) before using links again. "
+                              "Caption files from YouTube Studio work in the meantime.")
         elif sm.get("needs_file"):
             n = len(sm["needs_file"])
             self.show_banner(f"{n} video{'s' if n != 1 else ''} can only be watched while signed in (age-restricted "
                              "or members-only). The app never signs in, so use the caption file from YouTube "
                              "Studio for those.", "warn", "How to get caption files", self.show_caption_help)
         if sm["api_key_problem"]:
-            if messagebox.askyesno(APP_NAME, "Gemini rejected your API key.\n\nEnter a new one now?"):
+            if auto:
+                self.v_auto.set(False)
+                self.s["auto_runs"] = False
+                self.persist()
+                self.show_banner("Gemini rejected your API key, so automatic runs were turned off. Fix the key in "
+                                 "Settings, then turn them back on on the Queue page.", "error")
+            elif messagebox.askyesno(APP_NAME, "Gemini rejected your API key.\n\nEnter a new one now?"):
                 self.open_wizard("gemini")
-        elif sm["error"]:
+        elif sm["error"] and not auto:
             messagebox.showerror(APP_NAME, sm["error"])
+
+    def _update_worklist(self, sm: dict):
+        """Every run (automatic or not) updates the Queue page's lists."""
+        before = {w["id"] for w in worklist.waiting(self.s)}
+        worklist.apply_outcomes(self.s, sm.get("outcomes") or {}, dict(sm.get("waiting_list") or []))
+        new = [v for v, _ in sm.get("waiting_list") or [] if v not in before]
+        if new:
+            self._append_log(f"{len(new)} stream(s) added to the waiting list. While the app is open it checks them "
+                             "about once an hour and runs them when the captions appear (Queue page).", "info")
+        if sm.get("daily_limit"):
+            worklist.pause_today(self.s)
+        self.persist()
+        if self.current_page == "queue":
+            self.refresh_queue()
 
 
 def config_log_tags(box):
@@ -1417,7 +1866,32 @@ class LogWindow(ctk.CTkToplevel):
         config_log_tags(self.box)
 
 
+def selftest(report: str) -> int:
+    """`StreamTimestamper.exe --selftest report.txt`: check the packaged app has everything it needs, without
+    opening a window or contacting anything. Used by the release build on the finished exe."""
+    problems = []
+    for mod in ("yt_dlp", "yt_dlp_ejs", "google.genai", "customtkinter", "PIL", "certifi", "tzdata"):
+        try:
+            __import__(mod)
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"import {mod}: {e}")
+    try:
+        from zoneinfo import ZoneInfo
+
+        ZoneInfo("America/Los_Angeles")
+    except Exception as e:  # noqa: BLE001
+        problems.append(f"time zones: {e}")
+    if not core.find_deno():
+        problems.append("deno is not bundled")
+    problems += transcribe.selftest()
+    with open(report, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(problems) if problems else "ok")
+    return 1 if problems else 0
+
+
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--selftest":
+        sys.exit(selftest(sys.argv[2]))
     App().mainloop()
 
 

@@ -17,6 +17,7 @@ import settings  # noqa: E402
 import updates  # noqa: E402
 import prompt_builder as pb  # noqa: E402
 import usage  # noqa: E402
+import worklist  # noqa: E402
 import version  # noqa: E402
 
 
@@ -227,7 +228,11 @@ class FakeRunTests(unittest.TestCase):
                 "https://www.youtube.com/@Chan\naaaaaaaaaaa\n")
         r = self.make(urls)
         sm = r.run()
-        self.assertEqual((sm["done"], sm["skipped"], sm["failed"]), (1, 2, 1), self.logs)
+        self.assertEqual((sm["done"], sm["skipped"], sm["failed"], sm["waiting"]), (1, 1, 0, 2), self.logs)
+        # still live / no captions yet -> waiting list, with titles, and an outcome for every video
+        self.assertEqual(sm["waiting_list"], [("ccccccccccc", "Live now"), ("ddddddddddd", "No caps")])
+        self.assertEqual(sm["outcomes"], {"aaaaaaaaaaa": "done", "bbbbbbbbbbb": "skipped",
+                                          "ccccccccccc": "waiting", "ddddddddddd": "waiting"})
         out = Path(self.tmp.name, "Long stream [aaaaaaaaaaa].txt")
         self.assertTrue(out.exists())
         self.assertIn("00:00:05", out.read_text())
@@ -1169,3 +1174,106 @@ class UsageTests(unittest.TestCase):
         finally:
             core.generate = orig
         self.assertEqual(events, [("sent", "m"), ("out", "m"), ("sent", "lite"), ("out", "lite")])
+
+
+class ResultToolsTests(unittest.TestCase):
+    TEXT = ("Timestamps:\n\n00:00 – Intro\n\n00:12:05 – Bob – Christian – Length: ~6 minutes\n\n"
+            "00:20:00 – Ann – Muslim\n\n1:05:09 – Cal\n")
+
+    def test_entries_and_seconds(self):
+        self.assertEqual([s for s, _ in core.result_entries(self.TEXT)], [0, 725, 1200, 3909])
+        self.assertEqual(core.ts_seconds("1:05:09"), 3909)
+        self.assertEqual(core.ts_seconds("05:09"), 309)
+
+    def test_checks(self):
+        self.assertEqual(core.check_result(self.TEXT, 7200), [])
+        bad = "00:00 – Intro\n00:10:00 – A\n00:09:00 – B\n00:09:05 – C\n"
+        w = core.check_result(bad, 300)
+        self.assertTrue(any("out of order" in x for x in w))
+        self.assertTrue(any("10 seconds" in x for x in w))
+        self.assertTrue(any("past the end" in x for x in w))
+        self.assertTrue(any("fewer than 3" in x for x in core.check_result("00:00 – Intro\n01:00 – A\n")))
+        self.assertTrue(any("characters" in x for x in core.check_result("00:00 x\n" + "y" * 5001)))
+        self.assertEqual(core.check_result("No qualifying segments found."), [])
+
+    def test_clip_rows_and_csv(self):
+        rows = core.clip_rows(self.TEXT, "abcdefghijk", 4000)
+        self.assertEqual([(r["start"], r["end"]) for r in rows],
+                         [("00:12:05", "00:18:05"), ("00:20:00", "01:05:09"), ("01:05:09", "01:06:40")])
+        self.assertEqual(rows[0]["link"], "https://www.youtube.com/watch?v=abcdefghijk&t=725s")
+        self.assertEqual(core.clip_rows(self.TEXT)[0]["link"], "")
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "c.csv")
+            core.write_clip_csv(p, [{"start": "00:00:01", "end": "", "minutes": "", "description": "=HYPERLINK(1)",
+                                     "link": ""}])
+            text = p.read_text(encoding="utf-8-sig")
+        self.assertIn("'=HYPERLINK(1)", text)  # never runs as a formula in Excel
+        self.assertTrue(text.startswith("start,end,minutes,description,link"))
+
+    def test_video_id_from_result_name(self):
+        self.assertEqual(core.video_id_from_result("C:/x/My Stream [abcdefghijk].txt"), "abcdefghijk")
+        self.assertEqual(core.video_id_from_result("My Stream.txt"), "")
+
+    def test_whisper_formats(self):
+        self.assertEqual(core.parse_caption_text('{"segments": [{"start": 61.2, "text": " hi"}]}', ".json"),
+                         ["[00:01:01] hi"])
+        self.assertEqual(core.parse_caption_text("start\tend\ttext\n62000\t63000\tworld\n", ".tsv"),
+                         ["[00:01:02] world"])
+        self.assertEqual(core.parse_caption_text("not json {", ".json"), [])
+
+
+class WorklistTests(unittest.TestCase):
+    T0 = 1_800_000_000.0  # a fixed moment
+
+    def test_waiting_is_checked_hourly_and_dropped_after_two_days(self):
+        s = {}
+        self.assertTrue(worklist.add_waiting(s, "aaaaaaaaaaa", "Stream A", self.T0))
+        self.assertFalse(worklist.add_waiting(s, "aaaaaaaaaaa", "", self.T0))  # no duplicates
+        self.assertEqual(worklist.due_waiting(s, self.T0 + 60), [])
+        self.assertEqual(worklist.due_waiting(s, self.T0 + 3600), ["aaaaaaaaaaa"])
+        worklist.check_all_now(s)
+        self.assertEqual(worklist.due_waiting(s, self.T0), ["aaaaaaaaaaa"])
+        self.assertEqual(worklist.expire_waiting(s, self.T0 + 47 * 3600), [])
+        self.assertEqual(len(worklist.expire_waiting(s, self.T0 + 49 * 3600)), 1)
+        self.assertEqual(worklist.waiting(s), [])
+
+    def test_backlog_per_day_and_waiting_first(self):
+        s = {"backlog_per_day": 2}
+        vids = [(c * 11, f"Old {c}") for c in "bcdef"]
+        self.assertEqual(worklist.add_backlog(s, "https://www.youtube.com/@x/streams", "@x", vids,
+                                              skip_ids=["ccccccccccc"], now=self.T0), 4)
+        worklist.add_waiting(s, "aaaaaaaaaaa", "New", self.T0 - 7200)
+        plan = worklist.plan_auto_run(s, 20, self.T0)
+        self.assertEqual(plan, ["aaaaaaaaaaa", "bbbbbbbbbbb", "ddddddddddd"])  # new stream first, then 2 old
+        worklist.apply_outcomes(s, {"aaaaaaaaaaa": "done", "bbbbbbbbbbb": "done", "ddddddddddd": "failed"},
+                                now=self.T0)
+        self.assertEqual(worklist.waiting(s), [])
+        b = worklist.backlog(s)[0]
+        self.assertEqual((b["done"], b["failed"], len(b["pending"])), (1, 1, 2))
+        self.assertEqual(worklist.plan_auto_run(s, 20, self.T0 + 60), [])  # today's 2 are used up
+        tomorrow = self.T0 + 24 * 3600
+        self.assertEqual(worklist.plan_auto_run(s, 20, tomorrow), ["eeeeeeeeeee", "fffffffffff"])
+
+    def test_still_waiting_and_daily_limit_pause(self):
+        s = {}
+        worklist.add_waiting(s, "aaaaaaaaaaa", "A", self.T0)
+        worklist.apply_outcomes(s, {"aaaaaaaaaaa": "waiting", "zzzzzzzzzzz": "waiting"},
+                                {"zzzzzzzzzzz": "Live now"}, now=self.T0 + 3600)
+        self.assertEqual([w["id"] for w in worklist.waiting(s)], ["aaaaaaaaaaa", "zzzzzzzzzzz"])
+        self.assertEqual(worklist.waiting(s)[1]["title"], "Live now")
+        worklist.check_all_now(s)
+        worklist.pause_today(s, self.T0)
+        self.assertEqual(worklist.plan_auto_run(s, 20, self.T0), [])
+        self.assertTrue(worklist.plan_auto_run(s, 20, self.T0 + 24 * 3600))
+
+    def test_old_backlog_stream_without_captions_is_not_retried_forever(self):
+        s = {}
+        worklist.add_backlog(s, "u", "u", [("bbbbbbbbbbb", "Old")], now=self.T0)
+        worklist.apply_outcomes(s, {"bbbbbbbbbbb": "waiting"}, now=self.T0)
+        self.assertEqual(worklist.waiting(s), [])
+        self.assertEqual(worklist.backlog(s)[0]["failed"], 1)
+
+    def test_run_cap_respected(self):
+        s = {"backlog_per_day": 50}
+        worklist.add_backlog(s, "u", "u", [(f"{i:011d}", "") for i in range(30)], now=self.T0)
+        self.assertEqual(len(worklist.plan_auto_run(s, 20, self.T0)), 20)

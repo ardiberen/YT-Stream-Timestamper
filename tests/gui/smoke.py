@@ -215,6 +215,55 @@ a.collect()
 check(a.s["merge_seconds"] == 60, "merge block length capped at 60 s")
 a.v_merge.set("15")
 
+print("7c. results: clickable times and clip list")
+import ui_common
+opened = []
+ui_common.open_url = opened.append
+res = [p for p in a._result_paths if p.endswith("[WbPksTZLcRA].txt")] if a._result_paths else []
+a.show_page("results")
+res = [p for p in a._result_paths if p.endswith("[WbPksTZLcRA].txt")]
+check(res, "YouTube result is listed")
+a.select_result(res[0])
+vb = a.view_box
+check(vb.tags.get("ts_link") == [("3.0", "3.8")], "the start time on the result line is a link: %r" % vb.tags.get("ts_link"))
+vb.tag_binds[("ts0", "<Button-1>")](None)
+check(opened == ["https://www.youtube.com/watch?v=WbPksTZLcRA&t=5s"], "clicking it opens the stream at that moment")
+messagebox.ANSWERS["askyesno"] = False
+a.save_clip_list()
+csvs = list(Path(a.s["output_dir"]).glob("*clips.csv"))
+check(len(csvs) == 1 and "t=5s" in csvs[0].read_text(encoding="utf-8-sig"), "clip list saved with links")
+messagebox.ANSWERS["askyesno"] = True
+
+print("7d. queue page and automatic runs")
+import worklist
+a.show_page("queue")
+check("YouTube limited" in a.queue_status.kw["text"], "queue pauses after a YouTube block")
+a.s["last_blocked"] = 0
+a.refresh_queue()
+check("On:" in a.queue_status.kw["text"], "queue page says automatic runs are on: " + a.queue_status.kw["text"])
+worklist.add_waiting(a.s, "ccccccccccc", "Still live stream", time.time() - 7200)
+worklist.check_all_now(a.s)
+FETCHED.clear()
+check(a._maybe_auto_run() is True, "a due waiting stream starts an automatic run")
+pump(lambda: a.btn_start.kw.get("state") == "normal", timeout=10)
+check(FETCHED and "ccccccccccc" in FETCHED[0], "the automatic run fetched the waiting stream")
+check(worklist.waiting(a.s) == [], "done streams leave the waiting list")
+check("Automatic run" in a.status_lbl.kw["text"], "status says it was automatic: " + a.status_lbl.kw["text"])
+check(a._maybe_auto_run() is False, "nothing more to do: no run")
+a.v_auto.set(False)
+worklist.add_waiting(a.s, "ddddddddddd", "x", time.time() - 7200)
+worklist.check_all_now(a.s)
+check(a._maybe_auto_run() is False, "switched off: no automatic run")
+a.v_auto.set(True)
+a.s["waiting"] = []
+
+print("7e. transcribe button without Whisper installed")
+import transcribe as _tr
+if not _tr.available():
+    messagebox.CALLS.clear()
+    a.transcribe_recording()
+    check(messagebox.CALLS and "isn't included" in messagebox.CALLS[-1][1], "explains when Whisper isn't in this copy")
+
 print("8. relaunch")
 a._on_close()
 saved = json.loads(settings.settings_path().read_text())

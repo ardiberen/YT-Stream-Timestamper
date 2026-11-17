@@ -11,9 +11,10 @@ This is an independent project and isn't affiliated with or endorsed by YouTube 
 3. Unzip the whole folder somewhere (not inside the zip) and run `StreamTimestamper.exe`. Windows may show a blue "Windows protected your PC" warning, because this is a new app that isn't code-signed (certificates cost money). If you downloaded it from the Releases page, click **More info → Run anyway**. Never turn off your antivirus for any app. Technical users can also confirm GitHub built the file from this source: `gh attestation verify <the zip> -R ardiberen/YT-Stream-Timestamper`.
 4. The setup wizard opens on first launch. It covers the Gemini API key, how the app keeps your channel safe, the output folder, and a short guide to tuning the prompt.
 5. **Prompt** page: pick a preset and describe what to find. Then click **Save as my preset** and tick **Start with this preset**.
-6. **Run** page: paste stream, playlist or channel links, *or* add caption files. Then press **Start**.
-7. **Results** page: read and copy the output, or open the output folder.
-8. When the app says a new version is available, download it the same way, delete the old app folder and unzip the new one. Your settings, presets and results are kept.
+6. **Run** page: paste stream, playlist or channel links, *or* add caption files, *or* click **Transcribe a recording…** (see below). Then press **Start**.
+7. **Results** page: read and copy the output. Click any time to open the stream at that moment, or **Save clip list (.csv)** for a spreadsheet of segments with links.
+8. **Queue** page (optional): streams that were still live or had no captions yet wait here and run on their own once YouTube has captions (checked about once an hour while the app is open). Add a channel or playlist to the **Backlog** to work through its old streams a few per day, so free limits last.
+9. When the app says a new version is available, download it the same way, delete the old app folder and unzip the new one. Your settings, presets and results are kept.
 
 ## Getting help
 
@@ -30,7 +31,7 @@ Fair question, since this is a free app from someone you don't know yet. You don
 
 - It's free and open source (MIT license). Every line of the program is in this repository.
 - It never asks for your YouTube or Google password and never uses cookies or browser data.
-- It connects only to YouTube (logged out), Google's Gemini service (with your own Gemini key) and GitHub (once a day, to read the newest version number). No telemetry, no ads, no account with me.
+- It connects only to YouTube (logged out), Google's Gemini service (with your own Gemini key), GitHub (once a day, to read the newest version number) and, only if you use **Transcribe a recording**, Hugging Face (once per model size, to download the free Whisper speech model; the app asks first). No telemetry, no ads, no account with me.
 - It needs no installer and no administrator rights. It doesn't add itself to Windows startup, doesn't change the registry, and doesn't keep running after you close it. Its files are the app folder you unzip and `%APPDATA%\StreamTimestamper` (settings and logs).
 - Your Gemini key stays on your PC, encrypted with your Windows login.
 
@@ -49,6 +50,15 @@ Fair question, since this is a free app from someone you don't know yet. You don
 5. Open Windows Resource Monitor → Network while it runs to see the only places it connects to.
 
 **About antivirus warnings:** this app is free and not code-signed (certificates cost money), and it's packaged with PyInstaller, which is common for Python apps. Unsigned apps like that are sometimes flagged by a few lesser-known engines on VirusTotal with generic labels (like "Malware", "Unsafe" or "BehavesLike"). Those are guesses based on how a file looks, not matches for a known virus. When I scan the release, Microsoft Defender and the large engines (Kaspersky, ESET, Bitdefender, Sophos, CrowdStrike and others) report nothing. If you're unsure, check the hashes as above, or email me and I'll help. Never turn off your antivirus for any app.
+
+## Transcribe a recording (no waiting for YouTube's captions)
+
+YouTube can take hours to make captions after a long stream. If you have the recording (your OBS file, or any video/audio file), click **Transcribe a recording…** on the Run page. The app turns it into captions on your PC with Whisper (faster-whisper):
+
+- Speed depends on your PC. On a modest 4-core machine the **base** model ran about 20× faster than real time (a 7-hour stream in roughly 20 minutes); **small** is more accurate and about twice as slow (Settings → Transcribing recordings).
+- It works through the recording 10 minutes at a time and saves as it goes (`Transcripts\<name>.srt` in your output folder). If the app is closed or you press Stop, it continues where it stopped next time.
+- The finished `.srt` is a normal caption file: it's added to the Run page automatically, and you can add it again any time later.
+- Already made a transcript with another Whisper tool? Add its `.srt`, `.vtt`, `.json` or `.tsv` file with **Add caption files…**.
 
 ## Account safety
 
@@ -72,7 +82,7 @@ Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replac
 
 ## Security
 
-**What the app connects to:** YouTube (logged out), Google's Gemini API, and GitHub once a day to see whether a newer version exists (Settings → App, untick "Tell me when a new version is out" to stop it). Nothing else: no telemetry, no other servers. The update check only reads the newest version number; the app never downloads or installs anything by itself.
+**What the app connects to:** YouTube (logged out), Google's Gemini API, and GitHub once a day to see whether a newer version exists (Settings → App, untick "Tell me when a new version is out" to stop it). If you use **Transcribe a recording**, it also downloads the Whisper speech model from Hugging Face the first time (it asks first; base is about 140 MB, small about 460 MB) and keeps it in `%APPDATA%\StreamTimestamper\models`. Recordings are transcribed on your PC and never uploaded. Nothing else: no telemetry, no other servers. The update check only reads the newest version number; the app never downloads or installs anything by itself.
 
 **What's locked down**
 
@@ -137,5 +147,7 @@ python -m unittest discover -s tests -v      (logic: no extra packages needed)
 | `version.py` | App version (the GitHub build adds the repo name for update checks) |
 | `updates.py` | Once-a-day "new version available" check against GitHub Releases |
 | `net_ssl.py` | Certificate settings for the app's own HTTPS requests (Windows store + bundled list) |
+| `worklist.py` | The Queue page's waiting list and backlog |
+| `transcribe.py` | Transcribes a recording on this PC with Whisper, saving as it goes |
 | `runlog.py` | Saves each run's Activity log to a file (last 10 kept) |
 | `assets/` | `icon.ico`, `icon.png`, `make_icon.py` to rebuild them, and `make_version_info.py` (writes the exe's Properties → Details data) |

@@ -20,3 +20,4 @@ cookies*.txt
 *.zip
 *.sha256
 version_info.txt
+selftest.txt

@@ -4,3 +4,6 @@ customtkinter
 pyinstaller
 pillow
 tzdata
+faster-whisper
+# PyAV 19 removed an option faster-whisper uses (metadata_errors); keep below 19 until faster-whisper catches up
+av<19

@@ -214,6 +214,13 @@ class CTkTextbox(_W):
     def see(self, *a): pass
     def tag_config(self, tag, **kw):
         if "font" in kw: raise AttributeError("CTkTextbox tag_config font not allowed")
+    def tag_add(self, tag, a, b=None):
+        self.__dict__.setdefault("tags", {}).setdefault(tag, []).append((a, b))
+    def tag_bind(self, tag, seq, fn, add=None):
+        self.__dict__.setdefault("tag_binds", {})[(tag, seq)] = fn
+    def tag_delete(self, *tags):
+        for t in tags:
+            self.__dict__.get("tags", {}).pop(t, None)
 class CTkImage:
     def __init__(self, light_image=None, dark_image=None, size=(20, 20)):
         _check("CTkImage", {"light_image": light_image, "dark_image": dark_image, "size": size})
