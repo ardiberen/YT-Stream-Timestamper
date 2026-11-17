@@ -1583,3 +1583,39 @@ class OverlapTests(unittest.TestCase):
         tidy = core.tidy_segments(s, 4)
         self.assertEqual([(core.fmt_ts(x["start"]), x["name"], (x["end"] - x["start"]) // 60) for x in tidy],
                          [("00:27:44", "James", 43), ("02:23:49", "Khaya", 31)])
+
+    def test_the_run_that_lost_steven(self):
+        # James given two hours late (02:27:44-03:10:44) overlaps Khaya AND the correct Steven (02:54:54). The
+        # wrong one is James: Steven must not be moved to his goodbye (that shrank him away under the minimum).
+        lines = ["[00:27:40] next up James", "[00:28:00] hi James", "[02:23:45] Khaya is on the line",
+                 "[02:54:50] alright Steven you're on", "[03:09:40] thanks Steven"]
+        s = core.parse_segments(json.dumps({"segments": [
+            {"start": "02:23:49", "end": "02:54:49", "name": "Khaya"},
+            {"start": "02:27:44", "end": "03:10:44", "name": "James"},
+            {"start": "02:54:54", "end": "03:10:54", "name": "Steven"}]}))
+        fixes, warnings = core.repair_overlaps(s, lines, 4)
+        tidy = core.tidy_segments(s, 4)
+        self.assertEqual([(core.fmt_ts(x["start"]), x["name"], (x["end"] - x["start"]) // 60) for x in tidy],
+                         [("00:27:44", "James", 43), ("02:23:49", "Khaya", 31), ("02:54:54", "Steven", 16)])
+        self.assertEqual(warnings, [])
+
+    def test_both_starts_right_means_the_earlier_end_ran_long(self):
+        lines = ["[01:00:05] hi Ann", "[01:40:10] hi Bob"]
+        s = core.parse_segments(json.dumps({"segments": [
+            {"start": "01:00:00", "end": "01:50:00", "name": "Ann"},
+            {"start": "01:40:00", "end": "02:00:00", "name": "Bob"}]}))
+        fixes, warnings = core.repair_overlaps(s, lines, 4)
+        self.assertEqual([(core.fmt_ts(x["start"]), core.fmt_ts(x["end"])) for x in sorted(s, key=lambda x: x["start"])],
+                         [("01:00:00", "01:40:00"), ("01:40:00", "02:00:00")])
+        self.assertTrue(fixes and "Ann: end" in fixes[0])
+
+    def test_a_fix_never_shrinks_a_call_away(self):
+        # the only later mention of Bob is his goodbye: moving there would leave 1 minute -> warn instead
+        lines = ["[01:58:30] bye Bob"]
+        s = core.parse_segments(json.dumps({"segments": [
+            {"start": "01:00:00", "end": "01:58:00", "name": "Ann"},
+            {"start": "01:40:00", "end": "02:00:00", "name": "Bob"}]}))
+        fixes, warnings = core.repair_overlaps(s, lines, 4)
+        self.assertEqual(fixes, [])
+        self.assertTrue(warnings)
+        self.assertEqual(len(core.tidy_segments(s, 4)), 2)  # both calls still listed
