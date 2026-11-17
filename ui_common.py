@@ -266,6 +266,35 @@ class ScrollFrame(ctk.CTkScrollableFrame):
         self._glide_job = self.after(GLIDE_MS, self._glide)
 
 
+def ask_choice(parent, title: str, message: str, options: list[tuple[str, str, str]]) -> str | None:
+    """A small window with a message and one button per option [(key, label, kind)]. Returns the key clicked,
+    or None if it was closed. Blocks until answered, like a message box."""
+    win = ctk.CTkToplevel(parent)
+    win.title(title)
+    win.configure(fg_color=CONTENT_BG)
+    win.resizable(False, False)
+    win.transient(parent)
+    answer: list = [None]
+    label(win, message, 14, wrap=460).pack(padx=24, pady=(22, 16), anchor="w")
+    row = ctk.CTkFrame(win, fg_color="transparent")
+    row.pack(padx=24, pady=(0, 20), anchor="e")
+
+    def pick(key):
+        answer[0] = key
+        win.destroy()
+
+    for key, text, kind in options:
+        button(row, text, lambda k=key: pick(k), kind=kind).pack(side="left", padx=(8, 0))
+    win.protocol("WM_DELETE_WINDOW", win.destroy)
+    win.after(50, lambda: (win.lift(), win.focus_force()))
+    try:
+        win.grab_set()
+    except Exception:  # noqa: BLE001
+        pass
+    parent.wait_window(win)
+    return answer[0]
+
+
 def work_area(win) -> tuple[int, int, int, int]:
     """(left, top, width, height) in screen pixels of the usable desktop (without the taskbar)."""
     if sys.platform.startswith("win"):

@@ -1020,6 +1020,27 @@ class App(ctk.CTk):
         self.btn_clear_files.grid()
 
     # ================================================================== transcribing a recording
+    def _ask_choice(self, title, message, options):
+        return ui.ask_choice(self, title, message, options)
+
+    def _links_in_box(self) -> list[str]:
+        if self.s.get("files_only") or self.v_files_only.get():
+            return []
+        lines = self.urls_box.get("1.0", "end").splitlines()
+        return [ln for ln in lines if core.classify_url(ln)[0] in ("video", "playlist", "channel")]
+
+    def _whisper_ready(self) -> bool:
+        """Ask before the speech model's one-time download. False = the person said no."""
+        if self.collect() is None:
+            return False
+        model = self.s.get("whisper_model") or transcribe.DEFAULT_MODEL
+        if transcribe.model_downloaded(model):
+            return True
+        size = transcribe.MODELS.get(model, ("", ""))[0]
+        return messagebox.askyesno(
+            APP_NAME, f"Transcribing needs Whisper's '{model}' speech model ({size}). It's downloaded once from "
+                      "Hugging Face (huggingface.co) and kept in the app's settings folder.\n\nDownload it now?")
+
     def transcribe_recording(self):
         if not transcribe.available():
             messagebox.showinfo(APP_NAME, "Transcribing isn't included in this copy of the app. Download the newest "
@@ -1028,6 +1049,22 @@ class App(ctk.CTk):
         if self._busy():
             messagebox.showinfo(APP_NAME, "Wait for the current run to finish first (or press Stop).")
             return
+        links = self._links_in_box()
+        if links:
+            n = len(links)
+            what = "this link" if n == 1 else f"these {n} links"
+            choice = self._ask_choice(
+                "Transcribe", f"Transcribe {what} on this PC, then find the timestamps?\n\nThe app downloads just "
+                              "the audio (logged out), turns it into a transcript with Whisper, then asks Gemini for "
+                              "the timestamps, all in one go. Transcripts are kept in the Transcripts folder.",
+                [("links", "Yes, transcribe " + ("the link" if n == 1 else "the links"), "primary"),
+                 ("file", "Choose a file instead", "secondary"), ("cancel", "Cancel", "ghost")])
+            if choice == "links":
+                if self._whisper_ready():
+                    self.start(whisper=True)
+                return
+            if choice != "file":
+                return
         exts = " ".join("*" + e for e in transcribe.MEDIA_EXTS)
         path = filedialog.askopenfilename(title="Choose a stream recording (video or audio)",
                                           filetypes=[("Recordings", exts), ("All files", "*.*")])
@@ -1035,7 +1072,7 @@ class App(ctk.CTk):
             self._start_transcription(path)
 
     def _start_transcription(self, path: str):
-        if self.collect() is None:
+        if not self._whisper_ready():
             return
         out = self.s["output_dir"]
         problem = core.check_writable(out)
@@ -1043,13 +1080,6 @@ class App(ctk.CTk):
             messagebox.showerror(APP_NAME, problem)
             return
         model = self.s.get("whisper_model") or transcribe.DEFAULT_MODEL
-        if not transcribe.model_downloaded(model):
-            size = transcribe.MODELS.get(model, ("", ""))[0]
-            if not messagebox.askyesno(
-                    APP_NAME, f"Transcribing needs Whisper's '{model}' speech model ({size}). It's downloaded once "
-                              "from Hugging Face (huggingface.co) and kept in the app's settings folder.\n\n"
-                              "Download it now?"):
-                return
         self._transcribing = True
         self.stop_event.clear()
         self._clear_log()
@@ -1103,11 +1133,12 @@ class App(ctk.CTk):
 
     def _on_transcribed(self, path: str, srt: str):
         self.progress.set(1)
-        if srt not in self.caption_files:
-            self.caption_files.append(srt)
-        self._refresh_files_label()
-        self._end_transcription(f"Transcript saved: {srt}. It's been added to the caption files above: press "
-                                "Start to find the segments (the file stays there for later, too).", "ok")
+        self._end_transcription(f"Transcript saved: {srt}. Now finding the timestamps ...", "ok")
+        if not self.start(only_files=[srt]):  # e.g. no API key yet: keep it ready on the Run page instead
+            if srt not in self.caption_files:
+                self.caption_files.append(srt)
+            self._refresh_files_label()
+            self._append_log("The transcript was added to the caption files above: press Start when ready.", "info")
 
     def _startup_unfinished_transcripts(self):
         try:
@@ -1526,8 +1557,10 @@ class App(ctk.CTk):
             ui.show_in_folder(self._selected_result)
 
     # ================================================================== run control
-    def start(self, auto_ids: list[str] | None = None) -> bool:
-        """Start a run. auto_ids: video ids from the Queue page (no pop-ups; the links box is left alone)."""
+    def start(self, auto_ids: list[str] | None = None, only_files: list[str] | None = None,
+              whisper: bool = False) -> bool:
+        """Start a run. auto_ids: video ids from the Queue page (no pop-ups; the links box is left alone).
+        only_files: just these caption files (a fresh transcript). whisper: transcribe the links' audio here."""
         auto = auto_ids is not None
         if self._busy():
             if not auto and self._transcribing:
@@ -1550,6 +1583,8 @@ class App(ctk.CTk):
         files_only = bool(self.s.get("files_only"))
         if auto:
             urls, files = "\n".join(auto_ids), []
+        elif only_files is not None:
+            urls, files = "", list(only_files)
         else:
             urls = "" if files_only else self.urls_box.get("1.0", "end")
             files = [f for f in self.caption_files if os.path.isfile(f)]
@@ -1573,11 +1608,16 @@ class App(ctk.CTk):
             if not auto:
                 messagebox.showerror(APP_NAME, str(e))
             return False
+        cfg.use_whisper = bool(whisper)
         self._auto_run = auto
 
         self.stop_event.clear()
-        self._clear_log()
+        if only_files is None:  # a fresh transcript's run keeps the transcription's lines above it
+            self._clear_log()
         self.runlog.start(self._log_header(cfg, urls, files))
+        if whisper:
+            self._append_log("Transcribing the links on this PC, then finding the timestamps. Each transcript is "
+                             "saved in the Transcripts folder as soon as it's done.", "info")
         if auto:
             self._append_log(f"Automatic run from the Queue page: {len(auto_ids)} stream(s).", "info")
         self.progress.set(0)

@@ -97,6 +97,8 @@ class RunConfig:
     max_retries: int = 3
     backup_model: str = ""  # used when the main model is overloaded or out of daily requests ("" = none)
     merge_seconds: int = 15  # caption lines are merged into blocks this long before sending (0 = off)
+    use_whisper: bool = False  # links: download the audio and transcribe it here instead of YouTube's captions
+    whisper_model: str = "base"
 
     @classmethod
     def from_settings(cls, s: dict) -> "RunConfig":
@@ -118,6 +120,7 @@ class RunConfig:
             max_retries=int(s.get("max_retries", 3)),
             backup_model=str(s.get("backup_model", "")).strip(),
             merge_seconds=int(s.get("merge_seconds", 15)),
+            whisper_model=str(s.get("whisper_model") or "base"),
         )
 
 
@@ -654,11 +657,31 @@ SAFE_YTDLP_ARGS = [
 ]
 
 
-def build_ydl_opts(extra: list[str], deno_path: Optional[str], logger) -> dict:
+# For "Transcribe the links": the same logged-out, YouTube-only rules, but the smallest audio-only format is
+# downloaded (no video, no captions). Whisper only needs 16 kHz speech, so the smallest audio is plenty.
+SAFE_AUDIO_ARGS = [
+    "--ignore-config", "--no-cookies", "--no-cookies-from-browser",
+    "--use-extractors", "youtube.*",
+    "--no-playlist", "--sleep-requests", "1",
+    "-f", "wa[acodec!=none][vcodec=none]/ba",
+    "--extractor-args", "youtube:skip=hls,translated_subs",
+    "--no-mtime", "--no-write-subs", "--no-write-thumbnail", "--no-write-info-json",
+    "--max-filesize", "4G",
+]
+
+
+def glob_escape(name: str) -> str:
+    """Make a file name safe to use in Path.glob (titles can contain [ ] * ?)."""
+    import glob
+
+    return glob.escape(name)
+
+
+def build_ydl_opts(extra: list[str], deno_path: Optional[str], logger, base_args: Optional[list] = None) -> dict:
     """Build yt-dlp options by parsing CLI-style args (most stable way to set the JS-runtime options)."""
     import yt_dlp
 
-    base = SAFE_YTDLP_ARGS + extra
+    base = list(SAFE_YTDLP_ARGS if base_args is None else base_args) + extra
     full = list(base)
     if deno_path:
         full += ["--js-runtimes", f"deno:{deno_path}"]
@@ -762,6 +785,7 @@ class Runner:
         self.waiting: list[tuple[str, str]] = []  # (video id, title): still live or no captions yet
         self._deno = find_deno()
         self._model = cfg.model  # switches to cfg.backup_model for the rest of the run if the daily limit is hit
+        self._whisper_model = None  # loaded once per run, only when transcribing
 
     # ---- plumbing
     def _check_stop(self):
@@ -773,7 +797,8 @@ class Runner:
             raise StopRequested()
 
     def _opts(self, extra: list[str]) -> dict:
-        return build_ydl_opts(extra, self._deno, _YtLogger(self.log))
+        base = SAFE_AUDIO_ARGS if self.cfg.use_whisper else None
+        return build_ydl_opts(extra, self._deno, _YtLogger(self.log), base)
 
     def _validate(self):
         c = self.cfg
@@ -805,7 +830,7 @@ class Runner:
         extra = ["--flat-playlist", "--yes-playlist"]
         if self.cfg.max_videos > 0:
             extra += ["--playlist-end", str(self.cfg.max_videos)]
-        opts = self._opts(extra)
+        opts = build_ydl_opts(extra, self._deno, _YtLogger(self.log))  # listing never downloads anything
         opts["noplaylist"] = False
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -892,7 +917,12 @@ class Runner:
             self.log(f"{p.name}: no captions found in this file. Is it a .vtt, .srt or .sbv caption file?", "error")
             return "failed"
         title = p.stem
-        out = unique_path(self.cfg.output_dir, safe_filename(title))
+        m = re.match(r"^(.*) \[([0-9A-Za-z_-]{11})\]$", title)
+        if m:  # a transcript of a YouTube stream: name the result like a link's, so its times are clickable
+            title = m.group(1)
+            out = unique_path(self.cfg.output_dir, f"{safe_filename(title)} [{m.group(2)}]")
+        else:
+            out = unique_path(self.cfg.output_dir, safe_filename(title))
         return self._finish(lines, title, out)
 
     # ---- one video
@@ -937,6 +967,9 @@ class Runner:
             self.log(f"Skipping {vid}: {dur / 60:.1f} min is shorter than the {c.min_stream_minutes:g} min minimum.")
             return "skipped", True
 
+        if c.use_whisper:
+            return self._whisper_video(vid, url, info, title, dur), True
+
         cap = pick_caption(info, c.caption_lang)
         if not cap:
             self.waiting.append((vid, title))
@@ -962,6 +995,107 @@ class Runner:
             self.log(f"{vid}: captions were empty.", "error")
             return "failed", True
         return self._finish(lines, title, Path(c.output_dir, f"{safe_filename(title)} [{vid}].txt"), dur), True
+
+    # ---- "Transcribe the links": audio -> Whisper on this PC -> transcript (.srt, kept) -> Gemini
+    def _whisper_video(self, vid: str, url: str, info: dict, title: str, dur) -> str:
+        import transcribe
+
+        c = self.cfg
+        folder = Path(c.output_dir, "Transcripts")
+        srt = folder / f"{safe_filename(title, 100)} [{vid}].srt"
+        if srt.exists():
+            self.log(f"Using the transcript made earlier: {srt.name}")
+        else:
+            kept = [p for p in sorted((folder / "audio").glob(glob_escape(srt.stem) + ".*"))
+                    if not p.name.endswith((".part", ".ytdl"))] if (folder / "audio").is_dir() else []
+            if kept:  # downloaded on an earlier try (the transcription was stopped or the app was closed)
+                audio = kept[0]
+                self.log("Using the audio downloaded earlier.")
+            else:
+                audio = self._download_audio(vid, url, info, folder / "audio")
+            if audio is None:
+                return "failed"
+            # the recording is named after the transcript, so the transcript (and its resume point) match it
+            named = audio.with_name(srt.stem + audio.suffix)
+            if audio != named:
+                os.replace(audio, named)
+                audio = named
+            if self._whisper_model is None:
+                self.status("Loading the speech model…")
+                self._whisper_model = transcribe.load_model(c.whisper_model)
+            started, first = time.time(), [None]
+
+            def progress(done, total):
+                if first[0] is None:
+                    first[0] = done
+                    return
+                rate = (done - first[0]) / max(1.0, time.time() - started)
+                left = f", about {int((total - done) / rate / 60) + 1} min left" if total and rate > 0 else ""
+                self.status(f"Transcribing {title[:40]}: {fmt_ts(int(done))} of {fmt_ts(int(total or 0))}{left}")
+
+            self.log(f"Transcribing the audio on this PC (Whisper {c.whisper_model}) ...")
+            try:
+                made = transcribe.transcribe(str(audio), c.output_dir, model=self._whisper_model,
+                                             model_name=c.whisper_model, language=c.caption_lang, stop=self.stop,
+                                             progress=progress, log=lambda m: self.log(m))
+            except transcribe.Stopped:
+                raise StopRequested()
+            if Path(made) != srt:
+                os.replace(made, srt)
+            try:
+                audio.unlink()  # the transcript is kept; the audio isn't needed any more
+            except OSError:
+                pass
+            self.log(f"Transcript saved: Transcripts\\{srt.name}", "ok")
+        lines = parse_caption_text(srt.read_text(encoding="utf-8", errors="replace"), ".srt")
+        if not lines:
+            self.log(f"{vid}: the transcript is empty (no speech found).", "error")
+            return "failed"
+        return self._finish(lines, title, Path(c.output_dir, f"{safe_filename(title)} [{vid}].txt"), dur)
+
+    def _download_audio(self, vid: str, url: str, info: dict, folder: Path) -> Optional[Path]:
+        """Download the smallest audio-only version of a stream (logged out). Resumes a half-finished download."""
+        import yt_dlp
+
+        folder.mkdir(parents=True, exist_ok=True)
+        stop = self.stop
+
+        def hook(d):
+            if stop.is_set():
+                raise StopRequested()
+            if d.get("status") == "downloading":
+                got, size = d.get("downloaded_bytes") or 0, d.get("total_bytes") or d.get("total_bytes_estimate")
+                pct = f"{100 * got / size:.0f}% of {size / 1e6:.0f} MB" if size else f"{got / 1e6:.0f} MB"
+                self.status(f"Downloading audio: {pct}")
+
+        opts = self._opts(["-o", str(folder / f"{vid}.%(ext)s")])
+        opts["progress_hooks"] = [hook]
+        self.log("Downloading the stream's audio (smallest audio-only version, logged out) ...")
+        self._sleep(random.uniform(2, 5))
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                done = ydl.process_ie_result(dict(info), download=True)
+                path = Path(ydl.prepare_filename(done))
+        except StopRequested:
+            raise
+        except Exception as e:  # noqa: BLE001
+            if stop.is_set():
+                raise StopRequested()
+            msg = str(e)
+            if BLOCKED_RE.search(msg):
+                raise YouTubeBlocked(msg)
+            if is_tls_problem(e):
+                raise NetworkTrustProblem(TLS_PROBLEM_MSG.format(what="YouTube"))
+            self.log(f"{vid}: couldn't download the audio: {_last_line(msg)}", "error")
+            return None
+        if not path.exists():
+            found = sorted(folder.glob(f"{vid}.*"))
+            found = [p for p in found if not p.name.endswith((".part", ".ytdl"))]
+            if not found:
+                self.log(f"{vid}: the audio download didn't produce a file.", "error")
+                return None
+            path = found[0]
+        return path
 
     def _switch_to_backup(self, why: str) -> bool:
         b = self.cfg.backup_model

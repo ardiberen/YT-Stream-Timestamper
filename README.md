@@ -53,11 +53,17 @@ Fair question, since this is a free app from someone you don't know yet. You don
 
 ## Transcribe a recording (no waiting for YouTube's captions)
 
-YouTube can take hours to make captions after a long stream. If you have the recording (your OBS file, or any video/audio file), click **Transcribe a recording…** on the Run page. The app turns it into captions on your PC with Whisper (faster-whisper):
+YouTube can take hours to make captions after a long stream. Click **Transcribe a recording…** on the Run page:
+
+- If there are links in the box, it asks whether to transcribe **those links**: the app downloads just each stream's audio (the smallest audio-only version, logged out, with the same pacing and stop-on-block rules as captions), transcribes it on your PC, then finds the timestamps, all in one go. The audio is deleted once it's transcribed.
+- Or choose **a recording you already have** (your OBS file, or any video/audio file). The timestamps follow automatically too.
+
+How the transcribing works (Whisper, via faster-whisper):
 
 - Speed depends on your PC. On a modest 4-core machine the **base** model ran about 20× faster than real time (a 7-hour stream in roughly 20 minutes); **small** is more accurate and about twice as slow (Settings → Transcribing recordings).
 - It works through the recording 10 minutes at a time and saves as it goes (`Transcripts\<name>.srt` in your output folder). If the app is closed or you press Stop, it continues where it stopped next time.
-- The finished `.srt` is a normal caption file: it's added to the Run page automatically, and you can add it again any time later.
+- The finished `.srt` is kept in `Transcripts` and is a normal caption file. Running the same link again reuses it instead of downloading and transcribing again, and you can add it with **Add caption files…** any time.
+- Downloading audio is a bigger request to YouTube than reading captions, so for big batches captions are still the gentler choice when they're ready.
 - Already made a transcript with another Whisper tool? Add its `.srt`, `.vtt`, `.json` or `.tsv` file with **Add caption files…**.
 
 ## Account safety
@@ -66,7 +72,7 @@ The app **never signs in to YouTube**:
 
 - It doesn't use any login, cookies or browser data.
 - yt-dlp always runs with `--ignore-config --no-cookies --no-cookies-from-browser`, so a yt-dlp config file on the PC can't add a login either.
-- Captions are read the way a logged-out visitor would read them.
+- Captions (or, if you choose to transcribe links, the audio) are read the way a logged-out visitor would.
 
 Guardrails (in Settings → YouTube safety):
 

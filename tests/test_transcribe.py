@@ -122,5 +122,75 @@ class TranscribeTests(unittest.TestCase):
             tr.transcribe(str(bad), str(self.out), model=FakeModel())
 
 
+@unittest.skipUnless(HAVE_AV, "PyAV/NumPy not installed")
+class LinkTranscribeTests(unittest.TestCase):
+    """'Transcribe the links': audio download -> Whisper -> transcript kept -> Gemini -> result."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out = self.tmp.name
+        self.downloads, self.sent = [], []
+        self.old = (core.generate, tr.load_model, tr.CHUNK_SECONDS)
+        core.generate = lambda key, model, system, transcript: self.sent.append(transcript) or "00:00 – Intro\n"
+        tr.load_model = lambda name, folder=None: FakeModel()
+        tr.CHUNK_SECONDS = 30
+
+    def tearDown(self):
+        core.generate, tr.load_model, tr.CHUNK_SECONDS = self.old
+        self.tmp.cleanup()
+
+    def runner(self, **kw):
+        cfg = core.RunConfig(api_key="k", model="m", prompt="p", output_dir=self.out, delay_min=0, delay_max=0,
+                             use_whisper=True, **kw)
+        logs = []
+        r = core.Runner(cfg, "aaaaaaaaaaa", lambda m, l="info": logs.append(m), lambda *a: None, lambda m: None,
+                        threading.Event())
+        r._sleep = lambda s: None
+        r._fetch_info = lambda url: {"title": "Big: Debate?", "duration": 7200}
+
+        def fake_download(vid, url, info, folder):
+            folder.mkdir(parents=True, exist_ok=True)
+            p = folder / f"{vid}.wav"
+            make_wav(p, 65)
+            self.downloads.append(vid)
+            return p
+        r._download_audio = fake_download
+        return r, logs
+
+    def test_link_to_result_in_one_go(self):
+        r, logs = self.runner()
+        sm = r.run()
+        self.assertEqual(sm["done"], 1, logs)
+        t = Path(self.out, "Transcripts")
+        self.assertTrue((t / "Big Debate [aaaaaaaaaaa].srt").exists())
+        self.assertEqual(list((t / "audio").iterdir()), [])  # the audio is deleted once transcribed
+        self.assertTrue(Path(self.out, "Big Debate [aaaaaaaaaaa].txt").exists())
+        self.assertTrue(self.sent and self.sent[0].startswith("[00:00:00] words at 0"))
+
+    def test_existing_transcript_is_reused(self):
+        self.runner()[0].run()
+        r, logs = self.runner(skip_existing=False)
+        self.assertEqual(r.run()["done"], 1)
+        self.assertEqual(self.downloads, ["aaaaaaaaaaa"])  # downloaded and transcribed only once
+        self.assertTrue(any("made earlier" in m for m in logs))
+
+    def test_audio_from_an_interrupted_try_is_reused(self):
+        folder = Path(self.out, "Transcripts", "audio")
+        folder.mkdir(parents=True)
+        make_wav(folder / "Big Debate [aaaaaaaaaaa].wav", 40)
+        r, logs = self.runner()
+        self.assertEqual(r.run()["done"], 1)
+        self.assertEqual(self.downloads, [])
+        self.assertTrue(any("downloaded earlier" in m for m in logs))
+
+    def test_caption_file_named_with_video_id_gets_a_linkable_result(self):
+        srt = Path(self.out, "Old Stream [bbbbbbbbbbb].srt")
+        srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nhi\n", encoding="utf-8")
+        cfg = core.RunConfig(api_key="k", model="m", prompt="p", output_dir=self.out)
+        core.Runner(cfg, "", lambda *a: None, lambda *a: None, lambda m: None, threading.Event(),
+                    files=[str(srt)]).run()
+        self.assertTrue(Path(self.out, "Old Stream [bbbbbbbbbbb].txt").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
