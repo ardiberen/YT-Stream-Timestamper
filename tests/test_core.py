@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import core  # noqa: E402
 import settings  # noqa: E402
 import updates  # noqa: E402
+import prompt_builder as pb  # noqa: E402
 import version  # noqa: E402
 
 
@@ -903,6 +904,30 @@ class GeminiDailyLimitTests(FakeRunTests):
         sm = self.make("aaaaaaaaaaa").run()
         self.assertEqual((len(calls), sm["done"]), (3, 1))
 
+    def test_daily_limit_switches_to_backup_for_rest_of_run(self):
+        models = []
+
+        def gen(key, model, system, transcript):
+            models.append(model)
+            if model == "m":
+                raise RuntimeError(self.DAY)
+            return "Timestamps:\n00:00:05 - A\n"
+        core.generate = gen
+        sm = self.make("aaaaaaaaaaa\nbbbbbbbbbbb", backup_model="lite", min_stream_minutes=5).run()
+        self.assertEqual(sm["done"], 2)
+        self.assertEqual(models, ["m", "lite", "lite"])  # main model isn't asked again once it's out for the day
+
+    def test_backup_daily_limit_also_stops(self):
+        calls = []
+
+        def gen(*a):
+            calls.append(a[1])
+            raise RuntimeError(self.DAY)
+        core.generate = gen
+        sm = self.make("aaaaaaaaaaa", backup_model="lite").run()
+        self.assertEqual(calls, ["m", "lite"])
+        self.assertIn("daily limit for lite", sm["error"])
+
     def test_key_test_message(self):
         orig = core.generate
         core.generate = lambda *a: (_ for _ in ()).throw(RuntimeError(self.DAY))
@@ -1011,3 +1036,84 @@ class VersionInfoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeminiRetryTests(FakeRunTests):
+    def test_overloaded_twice_tries_backup_once_then_main_again(self):
+        models, waits = [], []
+
+        def gen(key, model, system, transcript):
+            models.append(model)
+            if model == "m" and len(models) <= 2:
+                raise RuntimeError("503 UNAVAILABLE. The model is overloaded.")
+            return "ok text"
+        core.generate = gen
+        r = self.make("aaaaaaaaaaa\nbbbbbbbbbbb", backup_model="lite", min_stream_minutes=5)
+        r._sleep = waits.append
+        sm = r.run()
+        self.assertEqual(sm["done"], 2)
+        self.assertEqual(models, ["m", "m", "lite", "m"])  # backup only for that stream
+
+    def test_no_backup_gives_up_after_max_retries(self):
+        calls = []
+
+        def gen(*a):
+            calls.append(1)
+            raise RuntimeError("503 UNAVAILABLE")
+        core.generate = gen
+        r = self.make("aaaaaaaaaaa", max_retries=3)
+        r._sleep = lambda s: None
+        sm = r.run()
+        self.assertEqual((len(calls), sm["failed"]), (3, 1))
+
+    def test_uses_googles_retry_delay(self):
+        waits = []
+        n = {"i": 0}
+
+        def gen(*a):
+            n["i"] += 1
+            if n["i"] == 1:
+                raise RuntimeError("429 RESOURCE_EXHAUSTED quotaId: 'GenerateRequestsPerMinutePerProjectPerModel'"
+                                   " {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '37s'}")
+            return "ok text"
+        core.generate = gen
+        r = self.make("aaaaaaaaaaa")
+        r._sleep = waits.append
+        r.run()
+        self.assertIn(37.0, waits)
+
+    def test_backoff_grows(self):
+        waits = []
+        core.generate = lambda *a: (_ for _ in ()).throw(RuntimeError("503 UNAVAILABLE"))
+        r = self.make("aaaaaaaaaaa", max_retries=3)
+        r._sleep = waits.append
+        r.run()
+        gemini_waits = [w for w in waits if w >= 20]
+        self.assertEqual(len(gemini_waits), 2)
+        self.assertGreater(gemini_waits[1], gemini_waits[0])
+
+    def test_retry_delay_parse(self):
+        self.assertEqual(core.retry_delay_seconds("'retryDelay': '12.5s'"), 12.5)
+        self.assertEqual(core.retry_delay_seconds('"retryDelay": "40s"'), 40.0)
+        self.assertIsNone(core.retry_delay_seconds("503 UNAVAILABLE"))
+
+
+class CompactLinesTests(unittest.TestCase):
+    def test_merges_into_blocks(self):
+        lines = ["[00:00:01] hi", "[00:00:05] there", "[00:00:16] next", "[00:00:20] one", "[00:01:00] later"]
+        self.assertEqual(core.compact_lines(lines, 15),
+                         ["[00:00:01] hi there", "[00:00:16] next one", "[00:01:00] later"])
+
+    def test_off_and_untimed_lines(self):
+        lines = ["[00:00:01] a", "no time", "[00:00:02] b"]
+        self.assertEqual(core.compact_lines(lines, 0), lines)
+        self.assertEqual(core.compact_lines(lines, 15), lines)
+
+    def test_saves_size(self):
+        lines = [f"[{core.fmt_ts(t)}] word word word" for t in range(0, 3600, 3)]
+        out = "\n".join(core.compact_lines(lines, 15))
+        self.assertLess(len(out), 0.7 * len("\n".join(lines)))
+
+    def test_summary_on_by_default(self):
+        self.assertTrue(pb.DEFAULT_FORM["summary_on"])
+        self.assertIn("One-line summary", pb.build_prompt({"find": "x"}))

@@ -86,7 +86,8 @@ DEFAULTS = {
     "last_blocked": 0,  # epoch seconds when YouTube last limited this connection (cool-down warning)
     "skip_existing": True,
     "save_transcript": False,
-    "max_retries": 5,
+    "max_retries": 3,
+    "backup_model": "gemini-3.5-flash-lite",  # tried when the main model is overloaded or out of daily requests
     "prompts": {},  # user presets: name -> {"mode", "form", "text"} (old versions stored a plain string)
     "selected_prompt": "",  # label of the preset shown, or "" for none
     "default_prompt": "",  # preset label to load on startup, or "" to restore the last session

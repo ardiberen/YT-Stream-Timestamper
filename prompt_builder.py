@@ -15,7 +15,7 @@ DEFAULT_FORM = {
     "detail_label": "Topic",
     "detail_examples": "",
     "length_on": True,
-    "summary_on": False,
+    "summary_on": True,
     "separator": "–",
     "header": "Timestamps:",  # blank = no header line
     "blank_between": True,
@@ -109,7 +109,7 @@ def build_prompt(form: dict) -> str:
 
     lines = [
         first,
-        "The transcript has one line per caption in the form [HH:MM:SS] text. "
+        "Each transcript line is [HH:MM:SS] followed by what was said from that time on. "
         "Speakers are not labeled, so work out who is talking from context.",
         "",
         "Task:",

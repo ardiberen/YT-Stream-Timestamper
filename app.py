@@ -28,6 +28,7 @@ from wizard import CaptionFileHelp, SetupWizard  # noqa: E402
 
 APP_NAME = ui.APP_NAME
 NO_PRESET = "(unsaved / custom)"
+NO_BACKUP = "(none)"
 COOLDOWN_HOURS = 6
 MIN_W, MIN_H = 900, 520  # smallest window (logical px): fits 1366x768 laptops at 125% scaling
 SPLIT_TOP_MIN, SPLIT_BOTTOM_MIN = 64, 200  # Run page: smallest links area / controls + Activity area
@@ -101,6 +102,7 @@ class App(ctk.CTk):
         self.v_max_run = sv(value=n(s["max_per_run"]))
         self.v_files_only = bv(value=bool(s.get("files_only", False)))
         self.v_retries = sv(value=n(s["max_retries"]))
+        self.v_backup = sv(value=s.get("backup_model", "") or NO_BACKUP)
         self.v_skip = bv(value=s["skip_existing"])
         self.v_raw = bv(value=s["save_transcript"])
         self.v_appearance = sv(value=str(s.get("appearance", "System")).capitalize())
@@ -594,7 +596,13 @@ class App(ctk.CTk):
 
         # AI retries
         i = add_card("AI")
-        srow(i, 0, "Retries when Gemini is busy", num_entry(i, self.v_retries))
+        r = srow(i, 0, "Retries when Gemini is busy", num_entry(i, self.v_retries),
+                 "Every attempt counts against a free key's daily requests, even a 'busy' answer, so keep this "
+                 "low (2-3).")
+        srow(i, r, "Backup model", ctk.CTkComboBox(i, values=[NO_BACKUP] + ui.MODELS, variable=self.v_backup,
+                                                    width=260, height=34),
+             "Used when the main model is overloaded, or for the rest of the run once its daily limit is "
+             "reached. Each model has its own free daily limit.")
 
         # App
         i = add_card("App")
@@ -753,6 +761,8 @@ class App(ctk.CTk):
             return None
         s["api_key"] = self.v_key.get().strip()
         s["model"] = self.v_model.get().strip()
+        b = self.v_backup.get().strip()
+        s["backup_model"] = "" if b == NO_BACKUP or b == s["model"] else b
         s["output_dir"] = self.v_out.get().strip()
         s["caption_lang"] = self.v_lang.get().strip() or "en"
         s["channel_tab"] = "streams" if self.v_tab.get() == "Streams" else "videos"
