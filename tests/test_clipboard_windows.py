@@ -45,7 +45,10 @@ class WindowsClipboardTests(unittest.TestCase):
             self.root = tk.Tk()
         except tk.TclError as e:
             self.skipTest(f"no display: {e}")
-        self.root.withdraw()
+        # Shown, like the app's window: Tk 9 on Windows crashed (access violation in clipboard_clear) when the
+        # clipboard was used from a window that had never been shown.
+        self.root.geometry("200x100+0+0")
+        self.root.update()
         self.ui.install_clipboard_fix(self.root)
 
     def tearDown(self):
