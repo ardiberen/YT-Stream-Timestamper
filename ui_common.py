@@ -367,13 +367,12 @@ def ago(days: float | None) -> str:
 
 
 # ---------------------------------------------------------------- clipboard
-# Tk 9 on Windows can go on pasting, inside the app, text the app copied earlier even after something new was
-# copied in another program (a YouTube link copied in the browser pasted as old timestamps). So when pasting, the
-# app asks Windows who owns the clipboard: if it's another program, the text is read from Windows directly;
-# if it's this app, Tk really has the newest copy and is asked as usual. The app never takes the clipboard away
-# from Tk and never reads Windows' copy while Tk owns it: both make Windows call back into Tk mid-way, which
-# crashed Tk 9 in testing. Any problem falls back to Tk's own clipboard.
+# On Windows the app does all copying and pasting itself, through the Windows clipboard, and Tk's own clipboard
+# is never used. Tk 9's clipboard on Windows proved unreliable: inside the app it kept pasting text the app had
+# copied earlier even after a link was copied in the browser, it came back empty right after copying, and it
+# crashed when used from a window that wasn't shown yet. Elsewhere, Tk's clipboard is used as usual.
 CF_UNICODETEXT = 13
+GMEM_MOVEABLE = 0x0002
 
 
 def _win_clipboard_api():
@@ -384,76 +383,139 @@ def _win_clipboard_api():
     k = ctypes.WinDLL("kernel32", use_last_error=True)
     u.OpenClipboard.argtypes, u.OpenClipboard.restype = [wintypes.HWND], wintypes.BOOL
     u.CloseClipboard.argtypes, u.CloseClipboard.restype = [], wintypes.BOOL
-    u.GetClipboardOwner.argtypes, u.GetClipboardOwner.restype = [], wintypes.HWND
-    u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    u.GetWindowThreadProcessId.restype = wintypes.DWORD
+    u.EmptyClipboard.argtypes, u.EmptyClipboard.restype = [], wintypes.BOOL
     u.IsClipboardFormatAvailable.argtypes, u.IsClipboardFormatAvailable.restype = [wintypes.UINT], wintypes.BOOL
     u.GetClipboardData.argtypes, u.GetClipboardData.restype = [wintypes.UINT], wintypes.HANDLE
+    u.SetClipboardData.argtypes, u.SetClipboardData.restype = [wintypes.UINT, wintypes.HANDLE], wintypes.HANDLE
+    k.GlobalAlloc.argtypes, k.GlobalAlloc.restype = [wintypes.UINT, ctypes.c_size_t], wintypes.HGLOBAL
     k.GlobalLock.argtypes, k.GlobalLock.restype = [wintypes.HGLOBAL], wintypes.LPVOID
     k.GlobalUnlock.argtypes, k.GlobalUnlock.restype = [wintypes.HGLOBAL], wintypes.BOOL
-    return ctypes, wintypes, u, k
+    k.GlobalFree.argtypes, k.GlobalFree.restype = [wintypes.HGLOBAL], wintypes.HGLOBAL
+    return ctypes, u, k
 
 
 def _win_open_clipboard(u) -> bool:
     import time as _time
 
-    for _ in range(10):  # another program may have it open for a moment
+    for _ in range(25):  # another program may have it open for a moment
         if u.OpenClipboard(None):
             return True
         _time.sleep(0.02)
     return False
 
 
-def _win_clipboard_owned_by_other_program(ctypes, wintypes, u) -> bool:
-    owner = u.GetClipboardOwner()
-    if not owner:
-        return True  # nobody (or a program that copied without an owner window): safe to read directly
-    pid = wintypes.DWORD(0)
-    u.GetWindowThreadProcessId(owner, ctypes.byref(pid))
-    return pid.value != os.getpid()
+def _win_read() -> str | None:
+    """The clipboard's text, "" if it holds no text, None if the clipboard couldn't be opened."""
+    ctypes, u, k = _win_clipboard_api()
+    if not u.IsClipboardFormatAvailable(CF_UNICODETEXT):
+        return ""
+    if not _win_open_clipboard(u):
+        return None
+    try:
+        h = u.GetClipboardData(CF_UNICODETEXT)
+        ptr = k.GlobalLock(h) if h else None
+        if not ptr:
+            return ""
+        try:
+            return ctypes.wstring_at(ptr)
+        finally:
+            k.GlobalUnlock(h)
+    finally:
+        u.CloseClipboard()
+
+
+def _win_write(text: str) -> bool:
+    ctypes, u, k = _win_clipboard_api()
+    data = (text + "\0").encode("utf-16-le")
+    h = k.GlobalAlloc(GMEM_MOVEABLE, len(data))
+    if not h:
+        return False
+    ptr = k.GlobalLock(h)
+    if not ptr:
+        k.GlobalFree(h)
+        return False
+    ctypes.memmove(ptr, data, len(data))
+    k.GlobalUnlock(h)
+    if not _win_open_clipboard(u):
+        k.GlobalFree(h)
+        return False
+    try:
+        u.EmptyClipboard()
+        if u.SetClipboardData(CF_UNICODETEXT, h):
+            return True  # Windows owns the memory now
+    finally:
+        u.CloseClipboard()
+    k.GlobalFree(h)
+    return False
 
 
 def read_clipboard(widget) -> str:
     """The text on the system clipboard right now."""
     if sys.platform.startswith("win"):
         try:
-            ctypes, wintypes, u, k = _win_clipboard_api()
-            if _win_clipboard_owned_by_other_program(ctypes, wintypes, u):
-                if not u.IsClipboardFormatAvailable(CF_UNICODETEXT):
-                    return ""
-                if _win_open_clipboard(u):
-                    try:
-                        h = u.GetClipboardData(CF_UNICODETEXT)
-                        ptr = k.GlobalLock(h) if h else None
-                        if not ptr:
-                            return ""
-                        try:
-                            return ctypes.wstring_at(ptr)
-                        finally:
-                            k.GlobalUnlock(h)
-                    finally:
-                        u.CloseClipboard()
+            text = _win_read()
+            if text is not None:
+                return text
         except Exception:  # noqa: BLE001
             pass
+        return ""  # never fall back to Tk's clipboard on Windows (see above)
     try:
         return widget.clipboard_get()
     except Exception:  # noqa: BLE001
         return ""
 
 
-def write_clipboard(widget, text: str) -> None:
+def write_clipboard(widget, text: str) -> bool:
+    """Put text on the system clipboard. False if Windows wouldn't let the app (rare: another program held it)."""
+    if sys.platform.startswith("win"):
+        try:
+            return _win_write(text)
+        except Exception:  # noqa: BLE001
+            return False
     widget.clipboard_clear()
     widget.clipboard_append(text)
     widget.update()
+    return True
+
+
+def _selected_text(w) -> str:
+    try:
+        if w.winfo_class() == "Text":
+            return w.get("sel.first", "sel.last")
+        return w.get()[w.index("sel.first"):w.index("sel.last")]
+    except Exception:  # noqa: BLE001  (nothing selected)
+        return ""
 
 
 def install_clipboard_fix(root) -> None:
-    """Make Paste in every text box and entry use the newest copied text (Windows)."""
+    """Copy, Cut and Paste in every text box and entry go through the Windows clipboard (Windows only)."""
     if not sys.platform.startswith("win"):
         return
 
+    def copy(event):
+        text = _selected_text(event.widget)
+        if text:
+            write_clipboard(root, text)
+        return "break"
+
+    def cut(event):
+        w = event.widget
+        text = _selected_text(w)
+        if text and write_clipboard(root, text):
+            try:
+                if str(w.cget("state")) != "disabled":
+                    w.delete("sel.first", "sel.last")
+            except Exception:  # noqa: BLE001
+                pass
+        return "break"
+
     def paste(event):
         w = event.widget
+        try:
+            if str(w.cget("state")) in ("disabled", "readonly"):
+                return "break"
+        except Exception:  # noqa: BLE001
+            pass
         text = read_clipboard(root)
         if not text:
             return "break"
@@ -469,6 +531,8 @@ def install_clipboard_fix(root) -> None:
         return "break"
 
     for cls in ("Text", "Entry"):
+        root.bind_class(cls, "<<Copy>>", copy)
+        root.bind_class(cls, "<<Cut>>", cut)
         root.bind_class(cls, "<<Paste>>", paste)
 
 

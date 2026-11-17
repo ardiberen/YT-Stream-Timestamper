@@ -1633,7 +1633,10 @@ class App(ctk.CTk):
 
     def copy_result(self):
         text = self.view_box.get("1.0", "end").rstrip("\n")
-        ui.write_clipboard(self, text)
+        if not ui.write_clipboard(self, text):
+            messagebox.showwarning(APP_NAME, "Windows didn't let the app use the clipboard just now (another program "
+                                             "may be using it). Try again in a moment.")
+            return
         self.btn_copy.configure(text="Copied ✓")
         self.after(1500, lambda: self.btn_copy.configure(text="Copy all"))
 
