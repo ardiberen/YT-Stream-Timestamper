@@ -3,3 +3,4 @@ google-genai
 customtkinter
 pyinstaller
 pillow
+tzdata

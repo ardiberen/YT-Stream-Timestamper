@@ -294,9 +294,12 @@ class SetupWizard(ctk.CTkToplevel):
         self.next_btn.configure(state="disabled", text="Checking key...")
         self.key_status.configure(text="Checking your key with Google...", text_color=ui.MUTED)
         self._test_result = None
+        self.app.note_gemini("sent", model)
 
         def work():
             self._test_result = core.test_api_key(key, model)
+            if "daily limit" in self._test_result[1]:
+                self.app.q.put(("gemini", "out", model))
 
         threading.Thread(target=work, daemon=True).start()
         self.after(200, lambda: self._wait_test(key))

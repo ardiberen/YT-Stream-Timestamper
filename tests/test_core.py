@@ -16,6 +16,7 @@ import core  # noqa: E402
 import settings  # noqa: E402
 import updates  # noqa: E402
 import prompt_builder as pb  # noqa: E402
+import usage  # noqa: E402
 import version  # noqa: E402
 
 
@@ -1117,3 +1118,54 @@ class CompactLinesTests(unittest.TestCase):
     def test_summary_on_by_default(self):
         self.assertTrue(pb.DEFAULT_FORM["summary_on"])
         self.assertIn("One-line summary", pb.build_prompt({"find": "x"}))
+
+
+class UsageTests(unittest.TestCase):
+    def test_pacific_day_rolls_over_at_midnight_pacific(self):
+        from datetime import datetime, timezone
+        # 07:59 UTC on Nov 17 is still Nov 16 in California (PST, UTC-8); 08:00 UTC is Nov 17
+        self.assertEqual(usage.pacific_today(datetime(2026, 11, 17, 7, 59, tzinfo=timezone.utc)), "2026-11-16")
+        self.assertEqual(usage.pacific_today(datetime(2026, 11, 17, 8, 0, tzinfo=timezone.utc)), "2026-11-17")
+        # summer (PDT, UTC-7)
+        self.assertEqual(usage.pacific_today(datetime(2026, 7, 1, 6, 59, tzinfo=timezone.utc)), "2026-06-30")
+
+    def test_pacific_day_without_timezone_data(self):
+        from datetime import datetime, timezone
+        from unittest import mock
+        import zoneinfo
+        with mock.patch.object(zoneinfo, "ZoneInfo", side_effect=zoneinfo.ZoneInfoNotFoundError("x")):
+            self.assertEqual(usage.pacific_today(datetime(2026, 11, 17, 7, 59, tzinfo=timezone.utc)), "2026-11-16")
+            self.assertEqual(usage.pacific_today(datetime(2026, 7, 1, 6, 59, tzinfo=timezone.utc)), "2026-06-30")
+            self.assertEqual(usage.pacific_today(datetime(2026, 7, 1, 7, 0, tzinfo=timezone.utc)), "2026-07-01")
+
+    def test_count_reset_and_describe(self):
+        from datetime import datetime, timezone
+        day1 = datetime(2026, 11, 17, 20, 0, tzinfo=timezone.utc)
+        day2 = datetime(2026, 11, 18, 20, 0, tzinfo=timezone.utc)
+        s = {}
+        self.assertIn("none yet", usage.describe(s, day1))
+        usage.record(s, "flash", day1)
+        usage.record(s, "flash", day1)
+        usage.record(s, "lite", day1)
+        usage.mark_out(s, "flash", day1)
+        self.assertEqual(usage.describe(s, day1), "Gemini requests today: flash 2 (limit reached), lite 1")
+        self.assertIn("none yet", usage.describe(s, day2))  # new Pacific day starts over
+
+    def test_bad_stored_data_is_ignored(self):
+        s = {"gemini_usage": {"date": usage.pacific_today(), "counts": {"a": "x", "b": 3}, "out": [1, "b"]}}
+        self.assertEqual(usage.describe(s), "Gemini requests today: b 3 (limit reached)")
+
+    def test_runner_reports_requests(self):
+        events = []
+        orig = core.generate
+        core.generate = lambda *a: (_ for _ in ()).throw(RuntimeError(GeminiDailyLimitTests.DAY))
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                cfg = core.RunConfig(api_key="k", model="m", prompt="p", output_dir=d, backup_model="lite")
+                vtt = Path(d, "x.vtt")
+                vtt.write_text("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhi\n", encoding="utf-8")
+                core.Runner(cfg, "", lambda *a: None, lambda *a: None, lambda m: None, threading.Event(),
+                            files=[str(vtt)], on_gemini=lambda e, m: events.append((e, m))).run()
+        finally:
+            core.generate = orig
+        self.assertEqual(events, [("sent", "m"), ("out", "m"), ("sent", "lite"), ("out", "lite")])

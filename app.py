@@ -23,6 +23,7 @@ import runlog  # noqa: E402
 import settings as store  # noqa: E402
 import ui_common as ui  # noqa: E402
 import updates  # noqa: E402
+import usage  # noqa: E402
 from version import GITHUB_REPO  # noqa: E402
 from wizard import CaptionFileHelp, SetupWizard  # noqa: E402
 
@@ -38,7 +39,7 @@ PAGE_TEXT = {
     "run": ("Run", "Paste stream links (or add caption files) and press Start."),
     "prompt": ("Prompt", "Tell the AI what to look for and how each line should look."),
     "results": ("Results", "Read and copy what the app has saved."),
-    "settings": ("Settings", "API key, where results go, which videos to process, and YouTube safety."),
+    "settings": ("Settings", "The essentials are at the top. Click a folded section to open it."),
 }
 
 
@@ -103,6 +104,7 @@ class App(ctk.CTk):
         self.v_files_only = bv(value=bool(s.get("files_only", False)))
         self.v_retries = sv(value=n(s["max_retries"]))
         self.v_backup = sv(value=s.get("backup_model", "") or NO_BACKUP)
+        self.v_merge = sv(value=n(s.get("merge_seconds", 15)))
         self.v_skip = bv(value=s["skip_existing"])
         self.v_raw = bv(value=s["save_transcript"])
         self.v_appearance = sv(value=str(s.get("appearance", "System")).capitalize())
@@ -235,9 +237,7 @@ class App(ctk.CTk):
         self.run_split.bind("<ButtonRelease-1>", self._on_split_moved, add="+")
         self.run_split.bind("<Configure>", self._on_split_configure, add="+")
 
-        outer, inner = ui.card(links, "Stream links",
-                               "One per line. Single streams, playlists, and channel links all work. "
-                               "Channel links use that channel's newest streams (change how many in Settings).")
+        outer, inner = ui.card(links, "Stream links", "One per line: streams, playlists or channels.")
         outer.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         self._links_card = outer
         inner.grid_columnconfigure(0, weight=1)
@@ -248,24 +248,20 @@ class App(ctk.CTk):
         self.links_off_lbl = ui.label(inner, "Links are turned off: 'Caption files only' is on in Settings.", 13,
                                       color=ui.WARN)
         self.links_off_lbl.grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ctk.CTkCheckBox(inner, text="Skip streams that already have results", variable=self.v_skip,
-                        font=ui.font(13)).grid(row=2, column=0, sticky="w", pady=(10, 0))
-
+        # one row: caption files on the left, the skip option on the right
         ff = ctk.CTkFrame(inner, fg_color="transparent")
-        ff.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        ff.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         ff.grid_columnconfigure(3, weight=1)
-        ui.label(ff, "Or caption files:", 14, "bold").grid(row=0, column=0, sticky="w", padx=(0, 10))
         ui.button(ff, "Add caption files…", self.add_caption_files, kind="secondary", height=32).grid(
-            row=0, column=1)
-        ui.button(ff, "How do I get these?", self.show_caption_help, kind="ghost", height=32).grid(
-            row=0, column=2, padx=6)
-        self.files_lbl = ui.label(ff, "", 13, color=ui.MUTED, wrap=380)
-        self.files_lbl.grid(row=0, column=3, sticky="w", padx=6)
+            row=0, column=0)
+        ui.button(ff, "How?", self.show_caption_help, kind="ghost", width=50, height=32).grid(row=0, column=1,
+                                                                                            padx=4)
+        self.files_lbl = ui.label(ff, "", 13, color=ui.MUTED, wrap=320)
+        self.files_lbl.grid(row=0, column=2, sticky="w", padx=4)
         self.btn_clear_files = ui.button(ff, "Clear", self.clear_caption_files, kind="ghost", width=60, height=32)
-        self.btn_clear_files.grid(row=0, column=4)
-        ui.hint(inner, "Caption files downloaded from YouTube Studio are read straight from your PC: the app "
-                       "doesn't contact YouTube at all for them.", wrap=700).grid(row=4, column=0, sticky="w",
-                                                                                  pady=(4, 0))
+        self.btn_clear_files.grid(row=0, column=3, sticky="w")
+        ctk.CTkCheckBox(ff, text="Skip streams that already have results", variable=self.v_skip,
+                        font=ui.font(13)).grid(row=0, column=4, sticky="e")
         self._refresh_files_label()
 
         ctl = ctk.CTkFrame(bottom, fg_color="transparent")
@@ -287,12 +283,13 @@ class App(ctk.CTk):
         self.progress.grid(row=0, column=0, sticky="ew")
         self.status_lbl = ui.label(prog, "Ready.", 13, color=ui.MUTED)
         self.status_lbl.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.usage_lbl = ui.label(prog, "", 12, color=ui.MUTED)
+        self.usage_lbl.grid(row=1, column=1, sticky="e", pady=(6, 0), padx=(12, 0))
 
         lo, li = ui.card(bottom, "Activity")
         lo.grid(row=2, column=0, sticky="nsew")
         bar = ctk.CTkFrame(lo, fg_color="transparent")
         bar.grid(row=0, column=0, sticky="e", padx=16, pady=(12, 0))
-        ui.label(bar, "Drag the bar above to resize", 12, color=ui.MUTED).pack(side="left", padx=(0, 10))
         ui.button(bar, "Open log folder", self.open_log_folder, kind="ghost", height=28,
                   font=ui.font(13)).pack(side="left")
         ui.button(bar, "Pop out ⧉", self.open_log_window, kind="secondary", height=28,
@@ -361,8 +358,7 @@ class App(ctk.CTk):
         fw = self.form_widgets
 
         # presets
-        o, i = ui.card(sc, "Preset", "Start from a built-in preset or one you saved. Changing the boxes below "
-                                     "doesn't change the preset until you save it.")
+        o, i = ui.card(sc, "Preset", "Changes below aren't kept in the preset until you save it.")
         o.grid(row=0, column=0, sticky="ew", padx=14, pady=(0, 14))
         self.preset_menu = ctk.CTkOptionMenu(i, variable=self.v_preset, values=[NO_PRESET], width=430, height=36,
                                              dynamic_resizing=False, font=ui.font(14),
@@ -376,24 +372,29 @@ class App(ctk.CTk):
                         command=self.toggle_default).pack(side="left", padx=10)
 
         # what to find
-        o, i = ui.card(sc, "What to look for", "Describe it like you'd explain it to a person watching the stream.")
+        o, i = ui.card(sc, "What to look for", "Describe it like you'd explain it to a person. Click ? for "
+                                               "examples.")
         o.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 14))
         r = 0
 
         def field(row, text, key, help_text=None, width=None, track=True):
-            ui.label(i, text, 14).grid(row=row, column=0, sticky="nw", padx=(0, 16), pady=(8, 0))
+            lf = ctk.CTkFrame(i, fg_color="transparent")
+            lf.grid(row=row, column=0, sticky="nw", padx=(0, 16), pady=(12, 0))
+            ui.label(lf, text, 14).pack(side="left")
             e = ctk.CTkEntry(i, textvariable=self.fv[key], width=width or 200, height=36, font=ui.font(14))
             e.grid(row=row, column=1, sticky="w" if width else "ew", pady=(8, 0))
             if track:
                 fw.append(e)
             if help_text:
-                ui.hint(i, help_text).grid(row=row + 1, column=1, sticky="w")
+                h = ui.hint(i, help_text)
+                h.grid(row=row + 1, column=1, sticky="w")
+                ui.help_toggle(lf, h).pack(side="left", padx=(6, 0))
                 return row + 2
             return row + 1
 
         r = field(r, "Show / channel name", "show", "Optional. Example: The Bible Guy")
         r = field(r, "About the show", "description", "Optional, one line. Example: an atheist call-in show")
-        r = field(r, "What should it find?", "find",
+        r = field(r, "What should it find? *", "find",
                   "Required. Example: a caller argues against the host  /  the host interviews a guest")
         r = field(r, "What should it ignore?", "ignore", "Optional. Example: the host, ads, intros")
         # stays editable in Advanced mode ({min_minutes} still uses it)
@@ -421,8 +422,8 @@ class App(ctk.CTk):
         e.pack(side="left")
         fw.append(e)
 
-        # layout
-        o, i = ui.card(sc, "Layout")
+        # layout (rarely changed, so folded away)
+        o, i, _ = ui.section(sc, "Output format", "Separator, title line, blank lines and YouTube chapters.")
         o.grid(row=3, column=0, sticky="ew", padx=14, pady=(0, 14))
         lr = ctk.CTkFrame(i, fg_color="transparent")
         lr.grid(row=0, column=0, columnspan=2, sticky="w")
@@ -448,14 +449,16 @@ class App(ctk.CTk):
         e = ctk.CTkEntry(chf, textvariable=self.fv["chapter_intro"], width=120, height=34)
         e.pack(side="left", padx=8)
         fw.append(e)
-        ui.hint(i, "Timestamps in a description or comment are clickable either way. Chapters (the sections on "
-                   "the video's progress bar) also need a 00:00 first line and at least 3 timestamps, each 10+ "
-                   "seconds apart.", wrap=700).grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        h = ui.hint(i, "Timestamps in a description or comment are clickable either way. Chapters (the sections "
+                       "on the video's progress bar) also need a 00:00 first line and at least 3 timestamps, each "
+                       "10+ seconds apart.", wrap=700)
+        h.grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ui.help_toggle(chf, h).pack(side="left", padx=(4, 0))
 
         # preview
-        o, i = ui.card(sc, "Instructions sent to the AI",
-                       "Built from the boxes above. Tick Advanced to edit the text by hand "
-                       "({min_minutes} is replaced by the minimum length).")
+        o, i, self._open_preview = ui.section(
+            sc, "Instructions sent to the AI", "Built from the boxes above. Open to read it, or tick Advanced to "
+                                               "edit it by hand ({min_minutes} becomes the minimum length).")
         o.grid(row=4, column=0, sticky="ew", padx=14, pady=(0, 8))
         i.grid_columnconfigure(0, weight=1)
         ctk.CTkCheckBox(i, text="Advanced: edit this text by hand", variable=self.v_adv, font=ui.font(13),
@@ -516,25 +519,33 @@ class App(ctk.CTk):
         sc.grid_columnconfigure(0, weight=1)
         row = [0]
 
-        def add_card(title, sub=None):
-            o, i = ui.card(sc, title, sub)
+        def add_card(title, sub=None, folded=False):
+            if folded:
+                o, i, _ = ui.section(sc, title, sub)
+            else:
+                o, i = ui.card(sc, title, sub)
             o.grid(row=row[0], column=0, sticky="ew", padx=14, pady=(0, 14))
             row[0] += 1
             return i
 
         def srow(inner, r, text, widget, help_text=None, sticky="w"):
-            ui.label(inner, text, 14).grid(row=r, column=0, sticky="nw", padx=(0, 20), pady=(10, 0))
+            """Label (+ a '?' that shows the help line) on the left, the control on the right."""
+            lf = ctk.CTkFrame(inner, fg_color="transparent")
+            lf.grid(row=r, column=0, sticky="nw", padx=(0, 20), pady=(12, 0))
+            ui.label(lf, text, 14).pack(side="left")
             widget.grid(row=r, column=1, sticky=sticky, pady=(8, 0))
             if help_text:
-                ui.hint(inner, help_text).grid(row=r + 1, column=1, sticky="w")
+                h = ui.hint(inner, help_text)
+                h.grid(row=r + 1, column=1, sticky="w")
+                ui.help_toggle(lf, h).pack(side="left", padx=(6, 0))
                 return r + 2
             return r + 1
 
         def num_entry(inner, var):
             return ctk.CTkEntry(inner, textvariable=var, width=90, height=34, font=ui.font(14))
 
-        # Gemini
-        i = add_card("Gemini AI", "Reads the captions and finds your segments.")
+        # ---- essentials (always open)
+        i = add_card("Gemini AI")
         kf = ctk.CTkFrame(i, fg_color="transparent")
         kf.grid_columnconfigure(0, weight=1)
         self.key_entry = ctk.CTkEntry(kf, textvariable=self.v_key, show="•", height=36, font=ui.font(14))
@@ -542,14 +553,14 @@ class App(ctk.CTk):
         ctk.CTkCheckBox(kf, text="Show", variable=self.v_show_key, width=70, command=self.toggle_key).grid(
             row=0, column=1, padx=10)
         ui.button(kf, "Test", self.test_key, kind="secondary", width=70).grid(row=0, column=2)
-        r = srow(i, 0, "API key", kf, "Get one at aistudio.google.com/apikey, or use Settings → Run setup again.",
+        r = srow(i, 0, "API key", kf, "Get one at aistudio.google.com/apikey, or use Run setup again (below).",
                  sticky="ew")
         r = srow(i, r, "AI model", ctk.CTkComboBox(i, values=ui.MODELS, variable=self.v_model, width=260,
-                                                    height=34))
+                                                    height=34), "You can also type any Gemini model name.")
         self.add_model_note(i).grid(row=r, column=1, sticky="w", pady=(4, 0))
-        ui.hint(i, "You can also type any Gemini model name.").grid(row=r + 1, column=1, sticky="w")
+        self.usage_lbl_settings = ui.label(i, "", 12, color=ui.MUTED, wrap=560)
+        self.usage_lbl_settings.grid(row=r + 1, column=1, sticky="w", pady=(6, 0))
 
-        # Output
         i = add_card("Where results go")
         of = ctk.CTkFrame(i, fg_color="transparent")
         of.grid_columnconfigure(0, weight=1)
@@ -557,13 +568,13 @@ class App(ctk.CTk):
         ui.button(of, "Browse...", self.browse_out, kind="secondary", width=100).grid(row=0, column=1, padx=(10, 0))
         ui.button(of, "Open", self.open_output, kind="secondary", width=70).grid(row=0, column=2, padx=(10, 0))
         r = srow(i, 0, "Output folder", of, sticky="ew")
-        ctk.CTkCheckBox(i, text="Also save the raw captions (.transcript.txt), handy for checking the AI's work",
-                        variable=self.v_raw, font=ui.font(13)).grid(row=r, column=1, sticky="w", pady=(12, 0))
+        ctk.CTkCheckBox(i, text="Also save the raw captions (.transcript.txt)", variable=self.v_raw,
+                        font=ui.font(13)).grid(row=r, column=1, sticky="w", pady=(12, 0))
 
-        # Which videos
-        i = add_card("Which videos")
-        r = srow(i, 0, "Skip streams shorter than", self._with_unit(i, self.v_min_stream, "minutes"),
-                 "Streams shorter than this are ignored.")
+        # ---- rarely changed (folded)
+        i = add_card("Which videos", "Minimum stream length, channel tab, how many videos, caption language.",
+                     folded=True)
+        r = srow(i, 0, "Skip streams shorter than", self._with_unit(i, self.v_min_stream, "minutes"))
         r = srow(i, r, "Channel links use", ctk.CTkOptionMenu(i, values=["Streams", "Videos"], variable=self.v_tab,
                                                                width=130, height=34),
                  "Which tab of a channel to take videos from.")
@@ -571,9 +582,8 @@ class App(ctk.CTk):
         srow(i, r, "Caption language", ctk.CTkEntry(i, textvariable=self.v_lang, width=90, height=34),
              "Language code of the captions to read, e.g. en, es, de.")
 
-        # YouTube safety
-        i = add_card("YouTube safety", "The app never signs in to YouTube: no login, cookies, or browser data are "
-                                       "used. These limits keep its logged-out requests slow and polite.")
+        i = add_card("YouTube safety", "No login is ever used. Pauses, a per-run limit, and a caption-files-only "
+                                       "mode keep requests slow and polite.", folded=True)
         wf = ctk.CTkFrame(i, fg_color="transparent")
         num_entry(wf, self.v_dmin).pack(side="left")
         ui.label(wf, "  to  ", 14).pack(side="left")
@@ -583,28 +593,27 @@ class App(ctk.CTk):
                                                   "to get limited.")
         r = srow(i, r, "Videos per run", self._with_unit(i, self.v_max_run, "at most (0 = no limit)"),
                  "Big batches are what get noticed. Spread them out over the day.")
-        ctk.CTkCheckBox(i, text="Caption files only: the app never contacts YouTube (links are turned off)",
-                        variable=self.v_files_only, font=ui.font(13), command=self._refresh_files_only).grid(
-            row=r, column=1, sticky="w", pady=(12, 0))
-        r += 1
-        ui.button(i, "How to get caption files from YouTube Studio", self.show_caption_help, kind="secondary").grid(
-            row=r, column=1, sticky="w", pady=(10, 0))
-        r += 1
-        ui.hint(i, "If YouTube ever says 'too many requests' or asks you to confirm you're not a bot, the app stops "
-                   "on its own. Wait several hours before trying again, or use caption files.", wrap=600).grid(
-            row=r, column=1, sticky="w", pady=(10, 0))
+        cf = ctk.CTkFrame(i, fg_color="transparent")
+        ctk.CTkCheckBox(cf, text="Caption files only (never contact YouTube)", variable=self.v_files_only,
+                        font=ui.font(13), command=self._refresh_files_only).pack(side="left")
+        ui.button(cf, "How to get them", self.show_caption_help, kind="ghost", height=30).pack(side="left", padx=8)
+        r = srow(i, r, "Mode", cf, "If YouTube ever says 'too many requests' or asks you to confirm you're not a "
+                                  "bot, the app stops on its own. Wait several hours, or use caption files.")
 
-        # AI retries
-        i = add_card("AI")
+        i = add_card("AI requests", "Retries, backup model, and how captions are packed to save your free quota.",
+                     folded=True)
         r = srow(i, 0, "Retries when Gemini is busy", num_entry(i, self.v_retries),
                  "Every attempt counts against a free key's daily requests, even a 'busy' answer, so keep this "
                  "low (2-3).")
-        srow(i, r, "Backup model", ctk.CTkComboBox(i, values=[NO_BACKUP] + ui.MODELS, variable=self.v_backup,
-                                                    width=260, height=34),
-             "Used when the main model is overloaded, or for the rest of the run once its daily limit is "
-             "reached. Each model has its own free daily limit.")
+        r = srow(i, r, "Backup model", ctk.CTkComboBox(i, values=[NO_BACKUP] + ui.MODELS, variable=self.v_backup,
+                                                        width=260, height=34),
+                 "Used when the main model stays overloaded (for that stream), or for the rest of the run once its "
+                 "daily limit is reached. Each model has its own free daily limit.")
+        srow(i, r, "Merge captions into", self._with_unit(i, self.v_merge, "second blocks (0 = off)"),
+             "Fewer, longer lines use fewer tokens. Timestamps can be up to this many seconds early. 15 is a good "
+             "balance; up to 60 is allowed.")
 
-        # App
+        # ---- app
         i = add_card("App")
         r = srow(i, 0, "Appearance", ctk.CTkOptionMenu(i, values=["System", "Light", "Dark"],
                                                         variable=self.v_appearance, width=130, height=34,
@@ -614,7 +623,6 @@ class App(ctk.CTk):
         ui.button(af, "Open settings folder", lambda: ui.open_path(str(store.app_dir())),
                   kind="secondary").pack(side="left", padx=10)
         r = srow(i, r, "Setup", af)
-        r = srow(i, r, "Version", ui.label(i, ui.VERSION, 14, color=ui.MUTED))
         if updates.repo_ok(GITHUB_REPO):
             uf = ctk.CTkFrame(i, fg_color="transparent")
             ctk.CTkCheckBox(uf, text="Tell me when a new version is out", variable=self.v_check_updates,
@@ -623,11 +631,14 @@ class App(ctk.CTk):
                       width=110).pack(side="left", padx=12)
             r = srow(i, r, "Updates", uf, "Checks GitHub once a day for a newer version and shows a link. It never "
                                            "downloads or installs anything by itself.")
-            ui.button(i, "Help & report a problem", lambda: ui.open_url(updates.help_page(GITHUB_REPO)),
-                      kind="secondary").grid(row=r, column=1, sticky="w", pady=(10, 0))
+            hf = ctk.CTkFrame(i, fg_color="transparent")
+            ui.label(hf, f"Version {ui.VERSION}", 14, color=ui.MUTED).pack(side="left")
+            ui.button(hf, "Help & report a problem", lambda: ui.open_url(updates.help_page(GITHUB_REPO)),
+                      kind="secondary").pack(side="left", padx=12)
+            srow(i, r, "Version", hf)
         else:
-            srow(i, r, "Updates", ui.hint(i, "Update notices are only in copies downloaded from the project's "
-                                             "GitHub Releases page."))
+            srow(i, r, "Version", ui.label(i, f"{ui.VERSION} (update notices are only in copies from the "
+                                              "project's GitHub Releases page)", 14, color=ui.MUTED))
 
     def _with_unit(self, parent, var, unit):
         f = ctk.CTkFrame(parent, fg_color="transparent")
@@ -667,6 +678,22 @@ class App(ctk.CTk):
         self._last_status_check = time.time()
         self._refresh_key_status()
         self._refresh_files_only()
+        self.refresh_usage()
+
+    def refresh_usage(self):
+        """'Gemini requests today' on the Run page and in Settings (starts over at midnight Pacific time)."""
+        text = usage.describe(self.s)
+        self.usage_lbl.configure(text=text)
+        self.usage_lbl_settings.configure(text=text + ". Counts only this app's requests; free daily limits reset "
+                                                      "at midnight Pacific time.")
+
+    def note_gemini(self, event: str, model: str):
+        """Called on the main thread for every Gemini request ("sent") and daily-limit answer ("out")."""
+        if event == "sent":
+            usage.record(self.s, model)
+        elif event == "out":
+            usage.mark_out(self.s, model)
+        self.refresh_usage()
 
     def _refresh_files_only(self):
         on = bool(self.v_files_only.get())
@@ -714,7 +741,7 @@ class App(ctk.CTk):
     def _refresh_files_label(self):
         n = len(self.caption_files)
         if not n:
-            self.files_lbl.configure(text="none added")
+            self.files_lbl.configure(text="")
             self.btn_clear_files.grid_remove()
             return
         names = ", ".join(os.path.basename(f) for f in self.caption_files[:3])
@@ -756,6 +783,7 @@ class App(ctk.CTk):
             s["delay_max"] = num(self.v_dmax, "Wait between videos (second box)")
             s["max_videos"] = num(self.v_max, "Newest videos", int)
             s["max_retries"] = max(1, num(self.v_retries, "Retries", int))
+            s["merge_seconds"] = min(60, num(self.v_merge, "Merge captions into", int))
         except ValueError as e:
             messagebox.showerror(APP_NAME, str(e))
             return None
@@ -866,6 +894,7 @@ class App(ctk.CTk):
         self.set_form(form)
         self.v_adv.set(advanced)
         if advanced:
+            self._open_preview(True)  # hand-edited text: show it
             self._set_form_state("disabled")
             self._set_preview(text or pb.build_prompt(self.get_form()))
         else:
@@ -981,8 +1010,12 @@ class App(ctk.CTk):
             return
         self.status_lbl.configure(text="Testing API key ...")
 
+        self.note_gemini("sent", model)
+
         def work():
             ok, msg = core.test_api_key(key, model)
+            if "daily limit" in msg:
+                self.q.put(("gemini", "out", model))
             self.q.put(("keytest", ok, msg))
 
         threading.Thread(target=work, daemon=True).start()
@@ -1121,6 +1154,7 @@ class App(ctk.CTk):
             status=lambda m: self.q.put(("status", m)),
             stop=self.stop_event,
             files=files,
+            on_gemini=lambda event, model: self.q.put(("gemini", event, model)),
         )
 
         def work():
@@ -1250,6 +1284,8 @@ class App(ctk.CTk):
                 elif kind == "keytest":
                     self.status_lbl.configure(text="Ready.")
                     (messagebox.showinfo if item[1] else messagebox.showerror)(APP_NAME, item[2])
+                elif kind == "gemini":
+                    self.note_gemini(item[1], item[2])
                 elif kind == "finished":
                     self._on_finished(item[1])
                 elif kind == "update":

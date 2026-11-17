@@ -7,7 +7,9 @@ cd /d "%~dp0"
 
 where python >nul 2>nul || (echo Python not found. Install Python 3.14 and tick "Add python.exe to PATH". & exit /b 1)
 REM The app ships this Python inside the exe, so it must be one that still gets Windows security fixes.
-python -c "import sys; sys.exit(sys.version_info < (3, 13))" || (echo Python 3.13 or newer is needed: older versions no longer get Windows security fixes. Install Python 3.14, delete the venv folder, and run build.bat again. & exit /b 1)
+REM 3.14.10 is the first 3.14 with the October 2026 security fixes (ssl CA denylist, tarfile). 3.13 is no
+REM longer offered: its fixed release (3.13.18) has no Windows installer.
+python -c "import sys; sys.exit(sys.version_info < (3, 14, 10))" || (echo Python 3.14.10 or newer is needed for its security fixes. Install the newest Python 3.14, delete the venv folder, and run build.bat again. & exit /b 1)
 
 if not exist venv (
   python -m venv venv || exit /b 1
@@ -48,6 +50,7 @@ pyinstaller --noconfirm --clean --windowed %MODE% --name StreamTimestamper ^
   --collect-all yt_dlp_ejs ^
   --collect-all google.genai ^
   --collect-all certifi ^
+  --collect-data tzdata ^
   %DENO_ARG% ^
   app.py || exit /b 1
 

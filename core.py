@@ -609,8 +609,11 @@ def _last_line(msg: str) -> str:
 
 class Runner:
     def __init__(self, cfg: RunConfig, urls_text: str, log: Callable, progress: Callable, status: Callable,
-                 stop: threading.Event, files: Optional[list[str]] = None):
+                 stop: threading.Event, files: Optional[list[str]] = None,
+                 on_gemini: Optional[Callable[[str, str], None]] = None):
         self.cfg, self.urls_text = cfg, urls_text or ""
+        # on_gemini(event, model): "sent" before every request, "out" when a model's daily limit is reached
+        self._on_gemini = on_gemini or (lambda event, model: None)
         self.files = list(files or [])
         # every message passes through redact(), so the API key can never end up in the activity log
         self.log = lambda msg, kind="info": log(redact(msg, cfg.api_key), kind)
@@ -837,6 +840,7 @@ class Runner:
             attempt += 1
             self._check_stop()
             try:
+                self._on_gemini("sent", self._model)
                 return generate(self.cfg.api_key, self._model, system, transcript)
             except Exception as e:  # noqa: BLE001
                 msg = str(e)
@@ -854,6 +858,7 @@ class Runner:
                                  "per-minute or the daily limit ...", "warn")
                         self._sleep(max(65.0, retry_delay_seconds(msg) or 0))
                         continue
+                    self._on_gemini("out", self._model)
                     if self._switch_to_backup(f"{self._model} has used up today's requests on this key."):
                         daily_checked, overloaded, attempt = False, 0, 0  # the backup gets its own attempts
                         continue
@@ -889,6 +894,7 @@ class Runner:
         """One request to the current model; errors other than the run-stopping ones are logged, not retried."""
         self._check_stop()
         try:
+            self._on_gemini("sent", self._model)
             return generate(self.cfg.api_key, self._model, system, transcript)
         except Exception as e:  # noqa: BLE001
             msg = str(e)

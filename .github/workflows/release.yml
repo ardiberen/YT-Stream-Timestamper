@@ -38,9 +38,11 @@ jobs:
       - name: Install packages
         shell: pwsh
         run: |
+          # refuse an interpreter without the October 2026 security fixes (CVE-2026-115557, CVE-2026-114583)
+          python -c "import sys; assert sys.version_info >= (3, 14, 10), sys.version"
           python -m pip install --upgrade pip
           pip install --upgrade -r requirements.txt
-          python -c "import yt_dlp, yt_dlp_ejs, google.genai, customtkinter, PIL"
+          python -c "import yt_dlp, yt_dlp_ejs, google.genai, customtkinter, PIL, tzdata"
           pip freeze > build-versions.txt
           "# built with $(python --version)" | Out-File -Append -Encoding ascii build-versions.txt
 
@@ -83,7 +85,7 @@ jobs:
           pyinstaller --noconfirm --clean --windowed --onedir --name StreamTimestamper `
             --icon assets\icon.ico --version-file version_info.txt --add-data "assets;assets" `
             --collect-all customtkinter --collect-all yt_dlp --collect-all yt_dlp_ejs `
-            --collect-all google.genai --collect-all certifi `
+            --collect-all google.genai --collect-all certifi --collect-data tzdata `
             --add-binary "$deno;." app.py
           if (-not (Test-Path dist\StreamTimestamper\StreamTimestamper.exe)) { throw "Build failed: no exe produced" }
 

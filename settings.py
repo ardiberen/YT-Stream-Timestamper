@@ -87,6 +87,8 @@ DEFAULTS = {
     "skip_existing": True,
     "save_transcript": False,
     "max_retries": 3,
+    "merge_seconds": 15,  # caption lines are merged into blocks this long before they're sent (0 = off)
+    "gemini_usage": {},  # requests sent today per model (see usage.py)
     "backup_model": "gemini-3.5-flash-lite",  # tried when the main model is overloaded or out of daily requests
     "prompts": {},  # user presets: name -> {"mode", "form", "text"} (old versions stored a plain string)
     "selected_prompt": "",  # label of the preset shown, or "" for none
