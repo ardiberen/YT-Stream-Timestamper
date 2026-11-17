@@ -805,9 +805,36 @@ def repair_overlaps(segments: list[dict], lines: list[str], slack: int = 30) -> 
             if b.get("end") is not None and b["end"] <= new:
                 b["end"] = None
         else:
-            warnings.append(f"{who_a} (until {fmt_ts(a['end'])}) and {who_b} (from {fmt_ts(b['start'])}) overlap; "
-                            "one of those times is probably off")
+            moved = _move_to_other_hour(b, segs, lines) or _move_to_other_hour(a, segs, lines)
+            if moved:
+                fixes.append(moved)
+            else:
+                warnings.append(f"{who_a} (until {fmt_ts(a['end'])}) and {who_b} (from {fmt_ts(b['start'])}) "
+                                "overlap; one of those times is probably off")
     return fixes, warnings
+
+
+def _move_to_other_hour(seg: dict, segs: list[dict], lines: list[str]) -> str:
+    """A whole segment given with the wrong hour (start AND end shifted, e.g. 02:27:44 for 00:27:44): try the same
+    minutes and seconds at each other hour, and move it where the person's name comes up within 5 minutes of the
+    start and the segment doesn't overlap anyone else. Returns a note, or "" if no hour fits."""
+    mentions = _name_mentions(lines, seg["name"])
+    if not mentions or seg.get("end") is None:
+        return ""
+    length = seg["end"] - seg["start"]
+    others = [x for x in segs if x is not seg and x.get("end") is not None]
+    for h in range(0, 24):
+        start = h * 3600 + seg["start"] % 3600
+        if start == seg["start"] or not any(abs(t - start) <= 300 for t in mentions):
+            continue
+        end = start + length
+        if any(start < x["end"] - 30 and x["start"] < end - 30 for x in others):
+            continue
+        note = (f"{seg['name']}: {fmt_ts(seg['start'])} -> {fmt_ts(start)} (overlapped another call; looked like "
+                f"a typo in the hour, and {seg['name']} is mentioned there)")
+        seg["start"], seg["end"] = start, end
+        return note
+    return ""
 
 
 def _name_key(name: str) -> str:

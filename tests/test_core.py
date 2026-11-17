@@ -1570,3 +1570,16 @@ class OverlapTests(unittest.TestCase):
         self.assertTrue(any("runs past the next one" in w for w in core.check_result(text)))
         ok = "00:00 – Intro\n02:23:34 – Kaya – Length: ~30 minutes\n02:54:54 – Steven – Length: ~16 minutes\n"
         self.assertFalse(any("runs past" in w for w in core.check_result(ok)))
+
+    def test_whole_call_with_the_wrong_hour_is_moved(self):
+        # real case: James given as 02:27:44 for ~43 min (start AND end two hours late), colliding with Khaya
+        lines = ["[00:27:40] next up James", "[00:28:00] hi James", "[02:23:45] Khaya is on the line"]
+        s = core.parse_segments(json.dumps({"segments": [
+            {"start": "02:23:49", "end": "02:54:49", "name": "Khaya"},
+            {"start": "02:27:44", "end": "03:10:44", "name": "James"}]}))
+        fixes, warnings = core.repair_overlaps(s, lines)
+        self.assertEqual(warnings, [])
+        self.assertTrue(fixes and "James" in fixes[0] and "00:27:44" in fixes[0])
+        tidy = core.tidy_segments(s, 4)
+        self.assertEqual([(core.fmt_ts(x["start"]), x["name"], (x["end"] - x["start"]) // 60) for x in tidy],
+                         [("00:27:44", "James", 43), ("02:23:49", "Khaya", 31)])
