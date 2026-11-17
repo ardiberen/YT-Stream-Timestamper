@@ -267,10 +267,11 @@ class ScrollFrame(ctk.CTkScrollableFrame):
 
 
 def ask_choice(parent, title: str, message: str, options: list[tuple[str, str, str]],
-               check: tuple | None = None) -> str | None:
+               check: tuple | None = None, select: tuple | None = None) -> str | None:
     """A small window with a message and one button per option [(key, label, kind)]. Returns the key clicked,
     or None if it was closed. Blocks until answered, like a message box. check: optional (text, BooleanVar)
-    shown as a tick box above the buttons."""
+    shown as a tick box above the buttons. select: optional (text, StringVar, values, hint) shown as a drop-down
+    row above the tick box."""
     win = ctk.CTkToplevel(parent)
     win.title(title)
     win.configure(fg_color=CONTENT_BG)
@@ -278,6 +279,14 @@ def ask_choice(parent, title: str, message: str, options: list[tuple[str, str, s
     win.transient(parent)
     answer: list = [None]
     label(win, message, 14, wrap=460).pack(padx=24, pady=(22, 16), anchor="w")
+    if select:
+        sf = ctk.CTkFrame(win, fg_color="transparent")
+        sf.pack(padx=24, pady=(0, 12), anchor="w")
+        label(sf, select[0], 14).pack(side="left")
+        ctk.CTkOptionMenu(sf, values=list(select[2]), variable=select[1], width=110, height=32).pack(
+            side="left", padx=10)
+        if len(select) > 3 and select[3]:
+            hint(sf, select[3], wrap=300).pack(side="left")
     if check:
         ctk.CTkCheckBox(win, text=check[0], variable=check[1], font=font(14)).pack(padx=24, pady=(0, 16),
                                                                                    anchor="w")

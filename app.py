@@ -1031,8 +1031,8 @@ class App(ctk.CTk):
         self.btn_clear_files.grid()
 
     # ================================================================== transcribing a recording
-    def _ask_choice(self, title, message, options, check=None):
-        return ui.ask_choice(self, title, message, options, check)
+    def _ask_choice(self, title, message, options, check=None, select=None):
+        return ui.ask_choice(self, title, message, options, check, select)
 
     def _links_in_box(self) -> list[str]:
         if self.s.get("files_only") or self.v_files_only.get():
@@ -1062,6 +1062,8 @@ class App(ctk.CTk):
             return
         links = self._links_in_box()
         check = ("Also find the timestamps (untick for transcripts only)", self.v_then_ts)
+        select = ("Speech model:", self.v_whisper, list(transcribe.MODELS),
+                  "base is faster; small is more accurate (better with names), about half the speed")
         if links:
             n = len(links)
             what = "this link" if n == 1 else f"these {n} links"
@@ -1070,13 +1072,14 @@ class App(ctk.CTk):
                               "turns it into a transcript with Whisper. Transcripts are kept in the Transcripts "
                               "folder.",
                 [("links", "Yes, transcribe " + ("the link" if n == 1 else "the links"), "primary"),
-                 ("file", "Choose a file instead", "secondary"), ("cancel", "Cancel", "ghost")], check)
+                 ("file", "Choose a file instead", "secondary"), ("cancel", "Cancel", "ghost")], check, select)
         else:
             choice = self._ask_choice(
                 "Transcribe", "Choose a recording (video or audio file) to transcribe on this PC with Whisper.\n\n"
                               "Tip: paste links in the box first to transcribe those instead.",
-                [("file", "Choose a file", "primary"), ("cancel", "Cancel", "ghost")], check)
+                [("file", "Choose a file", "primary"), ("cancel", "Cancel", "ghost")], check, select)
         self.s["transcribe_then_timestamps"] = bool(self.v_then_ts.get())
+        self.s["whisper_model"] = self.v_whisper.get() if self.v_whisper.get() in transcribe.MODELS else "base"
         if choice == "links":
             if self._whisper_ready():
                 self.start(whisper=True)

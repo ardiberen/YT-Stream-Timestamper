@@ -266,7 +266,7 @@ if not _tr.available():
 
 print("7f. transcribe prompt and its tick box")
 asked = []
-a._ask_choice = lambda title, msg, options, check=None: asked.append((msg, [k for k, _, _ in options], check)) or "cancel"
+a._ask_choice = lambda title, msg, options, check=None, select=None: asked.append((msg, [k for k, _, _ in options], check, select)) or "cancel"
 a.urls_box.buf = ""
 a.transcribe_recording() if _tr.available() else None
 a.urls_box.buf = "https://youtu.be/aaaaaaaaaaa"
@@ -275,6 +275,7 @@ if _tr.available():
     check(asked[-1][1] == ["links", "file", "cancel"], "links in the box: offers them, a file, or cancel")
     check(asked[0][1] == ["file", "cancel"], "no links: choose a file or cancel")
     check(asked[-1][2][1] is a.v_then_ts and a.v_then_ts.get(), "'also find the timestamps' is ticked by default")
+    check(asked[-1][3][1] is a.v_whisper and asked[-1][3][2] == ["base", "small"], "base/small picker in the window")
 check(a.s.get("transcribe_then_timestamps", True) is True, "setting defaults to doing everything in one go")
 a.v_then_ts.set(False)
 a.collect()

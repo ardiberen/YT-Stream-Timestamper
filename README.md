@@ -61,6 +61,7 @@ YouTube can take hours to make captions after a long stream. Click **Transcribe 
 
 How the transcribing works (Whisper, via faster-whisper):
 
+- Pick the **speech model** right in the Transcribe window (also in Settings → Transcribing recordings): **base** is faster, **small** is more accurate, especially with names.
 - Speed depends on your PC. On a modest 4-core machine the **base** model ran about 20× faster than real time (a 7-hour stream in roughly 20 minutes); **small** is more accurate and about twice as slow (Settings → Transcribing recordings).
 - **Stop** works within a second. While transcribing, it asks whether to keep the part done so far (the same recording or link continues from there next time) or delete the unfinished files. Finished transcripts and saved results are always kept, in your output folder's `Transcripts` folder (Settings → Transcribing recordings → **Open Transcripts folder**).
 - It works through the recording 10 minutes at a time and saves as it goes (`Transcripts\<name>.srt` in your output folder). If the app is closed or you press Stop, it continues where it stopped next time.
