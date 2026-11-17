@@ -202,15 +202,17 @@ class LinkTranscribeTests(unittest.TestCase):
         slow = FakeModel()
         orig = slow.transcribe
 
+        r, logs = self.runner()
+
         def slow_transcribe(samples, **kw):
-            _t.sleep(0.3)
+            if slow.calls == 1:  # the first piece is saved; Stop arrives while the second is being worked on
+                r.stop.set()
+                _t.sleep(0.3)
             return orig(samples, **kw)
         slow.transcribe = slow_transcribe
         tr.load_model = lambda name, folder=None: slow
-        r, logs = self.runner()
         if discard:
             r.discard.set()
-        threading.Timer(0.5, r.stop.set).start()
         sm = r.run()
         self.assertTrue(sm["stopped"], logs)
         return Path(self.out, "Transcripts")

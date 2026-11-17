@@ -205,27 +205,31 @@ def transcribe(recording: str, out_dir: str, model=None, model_name: str = DEFAU
     model = model or load_model(model_name)
     n = _cue_count(partial)
     progress(start, total)
-    for at, samples in iter_chunks(recording, start):
-        if stop is not None and stop.is_set():
-            raise Stopped()
-        segments, _info = model.transcribe(samples, language=language or None, vad_filter=True, beam_size=1,
-                                           condition_on_previous_text=False)
-        lines = []
-        for seg in segments:
+    chunks = iter_chunks(recording, start)
+    try:
+        for at, samples in chunks:
             if stop is not None and stop.is_set():
-                raise Stopped()  # this piece isn't saved; it's redone next time
-            text = seg.text.strip()
-            if text:
-                n += 1
-                lines.append(f"{n}\n{_srt_time(at + seg.start)} --> {_srt_time(at + seg.end)}\n{text}\n")
-        done = at + len(samples) / SAMPLE_RATE
-        with open(partial, "a", encoding="utf-8") as fh:
-            fh.write("\n".join(lines) + ("\n" if lines else ""))
-        tmp = progress_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps({**_source_id(recording), "done_until": done, "duration": total,
-                                   "model": model_name}), encoding="utf-8")
-        os.replace(tmp, progress_file)
-        progress(done, total)
+                raise Stopped()
+            segments, _info = model.transcribe(samples, language=language or None, vad_filter=True, beam_size=1,
+                                               condition_on_previous_text=False)
+            lines = []
+            for seg in segments:
+                if stop is not None and stop.is_set():
+                    raise Stopped()  # this piece isn't saved; it's redone next time
+                text = seg.text.strip()
+                if text:
+                    n += 1
+                    lines.append(f"{n}\n{_srt_time(at + seg.start)} --> {_srt_time(at + seg.end)}\n{text}\n")
+            done = at + len(samples) / SAMPLE_RATE
+            with open(partial, "a", encoding="utf-8") as fh:
+                fh.write("\n".join(lines) + ("\n" if lines else ""))
+            tmp = progress_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps({**_source_id(recording), "done_until": done, "duration": total,
+                                       "model": model_name}), encoding="utf-8")
+            os.replace(tmp, progress_file)
+            progress(done, total)
+    finally:
+        chunks.close()  # let go of the recording right away (Windows can't delete a file that's still open)
     os.replace(partial, final)
     try:
         progress_file.unlink()
