@@ -179,7 +179,7 @@ class MiscTests(unittest.TestCase):
             self.assertNotIn("unknown_key", s2)
             p.write_text("{not json")
             s3 = settings.load(p)
-            self.assertEqual(s3["model"], "gemini-3.6-flash")
+            self.assertEqual(s3["model"], "gemini-4-hydrogen")
             self.assertTrue(p.with_suffix(".bad").exists())
 
 
@@ -869,10 +869,11 @@ class GeminiDailyLimitTests(FakeRunTests):
             calls.append(1)
             raise RuntimeError(self.DAY)
         core.generate = gen
-        sm = self.make("aaaaaaaaaaa\nhttps://youtu.be/aaaaaaaaaaa").run()
-        self.assertEqual(len(calls), 1)  # no retries, no second stream
-        self.assertIn("daily limit for m", sm["error"])
-        self.assertIn("midnight Pacific", sm["error"])
+        sm = self.make("aaaaaaaaaaa\nbbbbbbbbbbb", min_stream_minutes=5).run()
+        self.assertEqual(len(calls), 1)  # no retries, nothing sent for the second stream
+        self.assertEqual((sm["gemini_wait"], sm["waiting"]), ("out", 2))  # both wait for later, nothing failed
+        self.assertEqual([v for v, _ in sm["waiting_list"]], ["aaaaaaaaaaa", "bbbbbbbbbbb"])
+        self.assertTrue(any("midnight Pacific" in m for _, m in self.logs))
 
     def test_minute_and_day_listed_waits_once_then_continues(self):
         calls = []
@@ -896,7 +897,7 @@ class GeminiDailyLimitTests(FakeRunTests):
         core.generate = gen
         sm = self.make("aaaaaaaaaaa").run()
         self.assertEqual(len(calls), 2)
-        self.assertIn("daily limit", sm["error"])
+        self.assertEqual(sm["gemini_wait"], "out")
 
     def test_per_minute_still_retried(self):
         calls = []
@@ -932,7 +933,7 @@ class GeminiDailyLimitTests(FakeRunTests):
         core.generate = gen
         sm = self.make("aaaaaaaaaaa", backup_model="lite").run()
         self.assertEqual(calls, ["m", "lite"])
-        self.assertIn("daily limit for lite", sm["error"])
+        self.assertEqual((sm["gemini_wait"], sm["gemini_wait_model"]), ("out", "lite"))
 
     def test_key_test_message(self):
         orig = core.generate
@@ -1045,20 +1046,23 @@ if __name__ == "__main__":
 
 
 class GeminiRetryTests(FakeRunTests):
-    def test_overloaded_twice_tries_backup_once_then_main_again(self):
+    def test_busy_for_every_try_then_backup_and_cooloff(self):
         models, waits = [], []
 
         def gen(key, model, system, transcript):
             models.append(model)
-            if model == "m" and len(models) <= 2:
+            if model == "m":
                 raise RuntimeError("503 UNAVAILABLE. The model is overloaded.")
             return "ok text"
         core.generate = gen
-        r = self.make("aaaaaaaaaaa\nbbbbbbbbbbb", backup_model="lite", min_stream_minutes=5)
+        cool = {}
+        r = self.make("aaaaaaaaaaa\nbbbbbbbbbbb", backup_model="lite", min_stream_minutes=5, cooloff=cool)
         r._sleep = waits.append
         sm = r.run()
         self.assertEqual(sm["done"], 2)
-        self.assertEqual(models, ["m", "m", "lite", "m"])  # backup only for that stream
+        # 3 tries on the busy model, then the backup; the busy model isn't asked again for the next stream
+        self.assertEqual(models, ["m", "m", "m", "lite", "lite"])
+        self.assertGreater(cool["m"], __import__("time").time() + 14 * 60)
 
     def test_no_backup_gives_up_after_max_retries(self):
         calls = []
@@ -1070,7 +1074,7 @@ class GeminiRetryTests(FakeRunTests):
         r = self.make("aaaaaaaaaaa", max_retries=3)
         r._sleep = lambda s: None
         sm = r.run()
-        self.assertEqual((len(calls), sm["failed"]), (3, 1))
+        self.assertEqual((len(calls), sm["failed"], sm["waiting"], sm["gemini_wait"]), (3, 0, 1, "busy"))
 
     def test_uses_googles_retry_delay(self):
         waits = []
@@ -1307,3 +1311,187 @@ class StopTests(FakeRunTests):
         self.assertTrue(r.run()["stopped"])
         release.set()
         self.assertLess(_t.time() - t0, 3)
+
+
+class ModelProblemTests(FakeRunTests):
+    BUSY = "503 UNAVAILABLE. The model is overloaded."
+
+    def busy_main(self):
+        calls = []
+
+        def gen(key, model, system, transcript):
+            calls.append(model)
+            if model == "m":
+                raise RuntimeError(self.BUSY)
+            return "ok text"
+        core.generate = gen
+        return calls
+
+    def test_ask_and_pick_another_model(self):
+        calls = self.busy_main()
+        asked = []
+        r = self.make("aaaaaaaaaaa", problem_choice="ask", backup_model="b2", model_choices=("m", "b2", "b3"))
+        r._ask_problem = lambda kind, model, options: asked.append((kind, model, options)) or ("model", "b3")
+        sm = r.run()
+        self.assertEqual(sm["done"], 1)
+        self.assertEqual(asked, [("busy", "m", ["b2", "b3"])])  # the busy model isn't offered
+        self.assertEqual(calls[-1], "b3")
+
+    def test_ask_and_wait(self):
+        self.busy_main()
+        r = self.make("aaaaaaaaaaa", problem_choice="ask", backup_model="b2")
+        r._ask_problem = lambda kind, model, options: ("wait", "")
+        sm = r.run()
+        self.assertEqual((sm["done"], sm["waiting"], sm["gemini_wait"]), (0, 1, "busy"))
+
+    def test_ask_and_cancel(self):
+        self.busy_main()
+        r = self.make("aaaaaaaaaaa", problem_choice="ask", backup_model="b2")
+        r._ask_problem = lambda kind, model, options: ("cancel", "")
+        sm = r.run()
+        self.assertTrue(sm["stopped"])
+        self.assertEqual(sm["waiting"], 0)
+
+    def test_nobody_to_ask_means_wait(self):
+        calls = self.busy_main()
+        sm = self.make("aaaaaaaaaaa", problem_choice="ask", backup_model="b2").run()  # automatic run: no asker
+        self.assertEqual((sm["waiting"], sm["gemini_wait"]), (1, "busy"))
+        self.assertNotIn("b2", calls)  # never silently uses another model
+
+    def test_cooling_or_out_models_get_no_request(self):
+        calls = []
+        core.generate = lambda key, model, system, transcript: calls.append(model) or "ok text"
+        import time as _t
+        sm = self.make("aaaaaaaaaaa", problem_choice="backup", backup_model="b2",
+                       cooloff={"m": _t.time() + 600}).run()
+        self.assertEqual((sm["done"], calls), (1, ["b2"]))
+        calls.clear()
+        sm = self.make("aaaaaaaaaaa", problem_choice="wait", out_today=("m",), skip_existing=False).run()
+        self.assertEqual((calls, sm["gemini_wait"]), ([], "out"))
+
+
+class PlanSplitTests(unittest.TestCase):
+    def test_waiting_first_and_each_list_needs_its_model(self):
+        s = {"backlog_per_day": 3}
+        worklist.add_backlog(s, "u", "u", [("bbbbbbbbbbb", ""), ("ccccccccccc", "")])
+        self.assertEqual(worklist.plan_split(s), ([], ["bbbbbbbbbbb", "ccccccccccc"]))
+        worklist.add_waiting(s, "aaaaaaaaaaa", "new")
+        worklist.check_all_now(s)
+        self.assertEqual(worklist.plan_split(s), (["aaaaaaaaaaa"], []))  # new streams first, on their own
+        # main model out for today: the backlog (its own model) still goes ahead
+        self.assertEqual(worklist.plan_split(s, waiting_ok=False), ([], ["bbbbbbbbbbb", "ccccccccccc"]))
+        self.assertEqual(worklist.plan_split(s, waiting_ok=False, backlog_ok=False), ([], []))
+
+
+class LiteHelperTests(unittest.TestCase):
+    """Flash-Lite helper: segments as data, tidied and laid out by the app (cases from a real Lite answer)."""
+    FORM = {"find": "a caller argues against the host", "min_minutes": "4", "detail_on": True,
+            "detail_label": "Stance", "summary_on": True, "trailing_period": True}
+    # what Gemini 3.5 Flash-Lite actually got wrong: Chaya split into 3 overlapping pieces, a too-long Katie
+    LITE = {"segments": [
+        {"start": "00:27:58", "end": "01:10:30", "name": "James", "detail": "Christian", "summary": "Motion."},
+        {"start": "01:11:34", "end": "01:29:50", "name": "Katie", "detail": "Christian", "summary": "Water."},
+        {"start": "02:22:30", "end": "02:52:30", "name": "Kaya", "detail": "Jewish", "summary": "Slavery."},
+        {"start": "02:46:58", "end": "02:52:58", "name": "Kaya", "detail": "Jewish", "summary": "More."},
+        {"start": "02:49:54", "end": "02:54:20", "name": "kaya ", "detail": "Jewish", "summary": "Talmud."},
+        {"start": "02:58:00", "end": "03:00:00", "name": "Brief", "detail": "", "summary": "Too short."},
+    ]}
+
+    def test_parse_and_tidy(self):
+        segs = core.parse_segments("```json\n" + json.dumps(self.LITE) + "\n```")
+        self.assertEqual(len(segs), 6)
+        tidy = core.tidy_segments(segs, 4, duration=4 * 3600)
+        self.assertEqual([(core.fmt_ts(x["start"]), x["name"]) for x in tidy],
+                         [("00:27:58", "James"), ("01:11:34", "Katie"), ("02:22:30", "Kaya")])
+        kaya = tidy[2]
+        self.assertEqual((kaya["end"] - kaya["start"]) // 60, 31)  # one call, 02:22:30 -> 02:54:20
+        self.assertEqual(kaya["summary"], "Slavery.")  # from the longest piece
+
+    def test_merge_only_close_pieces_of_the_same_name(self):
+        segs = [{"start": 0, "end": 600, "name": "Ann", "detail": "", "summary": ""},
+                {"start": 700, "end": 1200, "name": "Ann", "detail": "", "summary": ""},   # 100 s gap: merged
+                {"start": 1500, "end": 2000, "name": "Ann", "detail": "", "summary": ""},  # 300 s gap: separate
+                {"start": 2050, "end": 2600, "name": "Bob", "detail": "", "summary": ""}]  # other name: separate
+        tidy = core.tidy_segments(segs)
+        self.assertEqual([(x["name"], x["start"], x["end"]) for x in tidy],
+                         [("Ann", 10, 1200), ("Ann", 1500, 2000), ("Bob", 2050, 2600)])
+
+    def test_render_in_the_chosen_format(self):
+        tidy = core.tidy_segments(core.parse_segments(json.dumps(self.LITE)), 4)
+        text = pb.render_segments(self.FORM, tidy)
+        self.assertTrue(text.startswith("Timestamps:\n\n00:00 – Intro\n\n00:27:58 – James – Christian – "
+                                        "Length: ~43 minutes – Motion.\n\n"))
+        self.assertIn("01:11:34 – Katie – Christian – Length: ~18 minutes – Water.", text)
+        self.assertTrue(text.rstrip().endswith("."))
+        self.assertEqual(core.check_result(text, 4 * 3600), [])
+        self.assertEqual(pb.render_segments(self.FORM, []), "No qualifying segments found.\n")
+
+    def test_bad_json(self):
+        self.assertIsNone(core.parse_segments("Sorry, I can't do that."))
+        self.assertEqual(core.parse_segments('{"segments": [{"start": "x", "end": "1:00", "name": "A"}]}'), [])
+
+    def test_data_prompt_has_the_length_rule(self):
+        p = pb.build_data_prompt(self.FORM)
+        self.assertIn("when that person leaves", p)
+        self.assertIn("Never split one call", p)
+        self.assertIn("{min_minutes}", p)
+
+
+class LiteHelperRunTests(FakeRunTests):
+    def make_lite(self, answers, **kw):
+        sent = []
+
+        def fake_json(key, model, system, contents, thinking=True):
+            sent.append((model, "DRAFT LIST" in contents, thinking))
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return a
+        core.generate_json, self._orig_json = fake_json, core.generate_json
+        self.addCleanup(lambda: setattr(core, "generate_json", self._orig_json))
+        r = self.make("aaaaaaaaaaa", form=LiteHelperTests.FORM, **kw)
+        r.cfg.model = r._model = "gemini-3.5-flash-lite"
+        long_stream = {"title": "Long stream", "duration": 4 * 3600,
+                       "automatic_captions": {"en": [{"ext": "json3", "url": "u"}]}}
+        r._fetch_info = lambda url: long_stream
+        return r, sent
+
+    def test_two_passes_then_tidy(self):
+        first = json.dumps(LiteHelperTests.LITE)
+        checked = json.dumps({"segments": LiteHelperTests.LITE["segments"][:3]})
+        r, sent = self.make_lite([first, checked])
+        sm = r.run()
+        self.assertEqual(sm["done"], 1, self.logs)
+        self.assertEqual([(m, d) for m, d, _ in sent], [("gemini-3.5-flash-lite", False), ("gemini-3.5-flash-lite", True)])
+        text = Path(sm["saved"][0]).read_text(encoding="utf-8")
+        self.assertIn("02:22:30 – Kaya – Jewish – Length: ~30 minutes", text)
+        self.assertEqual(text.count("Kaya"), 1)
+        self.assertEqual(self.calls, [])  # the normal text prompt wasn't used
+
+    def test_check_step_failing_keeps_the_first_list(self):
+        r, sent = self.make_lite([json.dumps(LiteHelperTests.LITE), "not json"])
+        sm = r.run()
+        self.assertEqual(sm["done"], 1)
+        self.assertIn("Kaya", Path(sm["saved"][0]).read_text(encoding="utf-8"))
+
+    def test_unreadable_answer_falls_back_to_the_normal_prompt(self):
+        r, sent = self.make_lite(["I'm not JSON"])
+        sm = r.run()
+        self.assertEqual(sm["done"], 1)
+        self.assertEqual(len(self.calls), 1)  # the normal text prompt was used instead
+
+    def test_model_without_thinking_setting(self):
+        refusal = RuntimeError("400 INVALID_ARGUMENT. Thinking level is not supported for this model.")
+        r, sent = self.make_lite([refusal, json.dumps(LiteHelperTests.LITE), json.dumps(LiteHelperTests.LITE)])
+        self.assertEqual(r.run()["done"], 1, self.logs)
+        self.assertEqual([t for _, _, t in sent], [True, False, False])  # asked once more without it, then never
+
+    def test_strong_models_and_hand_edited_prompts_skip_the_helper(self):
+        r, sent = self.make_lite([])
+        r.cfg.model = r._model = "gemini-4-hydrogen"
+        r.run()
+        self.assertEqual(sent, [])
+        r2, sent2 = self.make_lite([], skip_existing=False)
+        r2.cfg.form = None
+        r2.run()
+        self.assertEqual(sent2, [])

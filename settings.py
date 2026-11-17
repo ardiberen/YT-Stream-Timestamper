@@ -72,7 +72,7 @@ DEFAULTS = {
     "appearance": "System",  # System / Light / Dark
     "api_key": "",  # plain text in memory only; saved to disk encrypted as api_key_enc when possible
     "api_key_enc": "",
-    "model": "gemini-3.6-flash",
+    "model": "gemini-4-hydrogen",
     "output_dir": "",  # filled in by load()
     "min_stream_minutes": 40,
     "min_segment_minutes": 4,
@@ -93,10 +93,14 @@ DEFAULTS = {
     "waiting": [],  # streams waiting for captions (see worklist.py)
     "backlog": [],  # older streams to work through, a few per day (see worklist.py)
     "backlog_per_day": 5,
+    "backlog_model": "gemini-3.5-flash-lite",  # backlog runs: many free requests a day (the Lite helper adds checks)
     "auto_day": {},  # today's backlog count / daily-limit pause (Pacific date)
     "whisper_model": "base",
-    "transcribe_then_timestamps": True,  # after transcribing, go straight on to finding the timestamps  # speech model for "Transcribe a recording" (base or small)
-    "backup_model": "gemini-3.5-flash-lite",  # tried when the main model is overloaded or out of daily requests
+    "transcribe_then_timestamps": True,
+    "lite_helper": True,  # Flash-Lite models: segments as data, app does the maths, plus a checking pass
+    "model_problem_choice": "ask",  # a model is busy / out of requests: ask | backup | wait | cancel
+    "model_cooloff": {},  # {model: until epoch}: a busy model is left alone for 15 minutes  # after transcribing, go straight on to finding the timestamps  # speech model for "Transcribe a recording" (base or small)
+    "backup_model": "gemini-3.8-flash",  # offered when the main model is busy or out of today's requests
     "prompts": {},  # user presets: name -> {"mode", "form", "text"} (old versions stored a plain string)
     "selected_prompt": "",  # label of the preset shown, or "" for none
     "default_prompt": "",  # preset label to load on startup, or "" to restore the last session

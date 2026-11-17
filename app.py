@@ -39,6 +39,9 @@ MAX_LOG_LINES = 5000
 NAV = [("run", "▶", "Run"), ("queue", "⏳", "Queue"), ("prompt", "✎", "Prompt"), ("results", "☰", "Results"),
        ("settings", "⚙", "Settings")]
 THEN_TS_TEXT = "Also find the timestamps right after transcribing (untick for transcripts only)"
+# when a model is busy or out of today's requests (settings["model_problem_choice"])
+PROBLEM_CHOICES = {"ask": "Ask me each time", "backup": "Switch to the backup model", "wait": "Wait and try later",
+                   "cancel": "Cancel the run"}
 AUTO_TICK_MS = 60_000  # how often the Queue page looks for work while the app is open
 PAGE_TEXT = {
     "run": ("Run", "Paste stream links (or add caption files) and press Start."),
@@ -123,9 +126,13 @@ class App(ctk.CTk):
         self.v_retries = sv(value=n(s["max_retries"]))
         self.v_backup = sv(value=s.get("backup_model", "") or NO_BACKUP)
         self.v_merge = sv(value=n(s.get("merge_seconds", 15)))
+        self.v_problem = sv(value=PROBLEM_CHOICES.get(s.get("model_problem_choice") or "ask",
+                                                      PROBLEM_CHOICES["ask"]))
         self.v_auto = bv(value=bool(s.get("auto_runs", True)))
+        self.v_lite_helper = bv(value=bool(s.get("lite_helper", True)))
         self.v_backlog_url = sv(value="")
         self.v_backlog_day = sv(value=n(s.get("backlog_per_day", worklist.BACKLOG_PER_DAY)))
+        self.v_backlog_model = sv(value=s.get("backlog_model") or "gemini-3.5-flash-lite")
         self.v_whisper = sv(value=s.get("whisper_model") or transcribe.DEFAULT_MODEL)
         self.v_then_ts = bv(value=bool(s.get("transcribe_then_timestamps", True)))
         self.v_skip = bv(value=s["skip_existing"])
@@ -455,9 +462,14 @@ class App(ctk.CTk):
         df = ctk.CTkFrame(i, fg_color="transparent")
         df.grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
         ctk.CTkEntry(df, textvariable=self.v_backlog_day, width=70, height=32, font=ui.font(14)).pack(side="left")
-        ui.label(df, "  backlog streams per day", 14).pack(side="left")
+        ui.label(df, "  backlog streams per day, using", 14).pack(side="left")
+        ctk.CTkComboBox(df, values=ui.MODELS, variable=self.v_backlog_model, width=210, height=32).pack(
+            side="left", padx=(8, 0))
+        ui.hint(i, "Flash-Lite models get about 500 free requests a day (the stronger ones about 20), so they suit a "
+                   "backlog; the app adds extra checks for them. New streams on the waiting list use your main "
+                   "model.", wrap=640).grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.backlog_rows = ctk.CTkFrame(i, fg_color="transparent")
-        self.backlog_rows.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.backlog_rows.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.backlog_rows.grid_columnconfigure(0, weight=1)
 
     def refresh_queue(self):
@@ -496,6 +508,11 @@ class App(ctk.CTk):
             return "Paused: 'Caption files only' is on in Settings, so YouTube isn't contacted."
         if worklist.paused_today(s):
             return "Paused until midnight Pacific time: Gemini's daily limit was reached."
+        notes = []
+        for which, m in (("waiting list", s.get("model", "")), ("backlog", s.get("backlog_model", ""))):
+            if m and not self._model_usable(m):
+                why = "out of today's requests" if m in usage._today(s)["out"] else "busy (trying again soon)"
+                notes.append(f"the {which}'s model ({m}) is {why}")
         since = time.time() - float(s.get("last_blocked") or 0)
         if since < COOLDOWN_HOURS * 3600:
             return f"Paused for about {int((COOLDOWN_HOURS * 3600 - since) // 3600) + 1} h: YouTube limited this " \
@@ -504,7 +521,8 @@ class App(ctk.CTk):
         parts = [f"{len(worklist.waiting(s))} waiting"]
         if worklist.backlog(s):
             parts.append(f"{left} more backlog stream{'s' if left != 1 else ''} today")
-        return "On: " + ", ".join(parts) + ". Keep the app open (minimized is fine)."
+        extra = (" Waiting: " + "; ".join(notes) + ".") if notes else ""
+        return "On: " + ", ".join(parts) + ". Keep the app open (minimized is fine)." + extra
 
     def _on_auto_toggle(self):
         self.s["auto_runs"] = bool(self.v_auto.get())
@@ -610,10 +628,19 @@ class App(ctk.CTk):
             return False
         if time.time() - float(s.get("last_blocked") or 0) < COOLDOWN_HOURS * 3600:
             return False
-        ids = worklist.plan_auto_run(s, int(s.get("max_per_run") or 0))
-        if not ids:
-            return False
-        return self.start(auto_ids=ids)
+        wait_ids, backlog_ids = worklist.plan_split(s, int(s.get("max_per_run") or 0),
+                                                    self._model_usable(s.get("model", "")),
+                                                    self._model_usable(s.get("backlog_model", "")))
+        if wait_ids:
+            return self.start(auto_ids=wait_ids)
+        if backlog_ids:
+            return self.start(auto_ids=backlog_ids, model=s.get("backlog_model") or None)
+        return False
+
+    def _model_usable(self, model: str) -> bool:
+        """Not out of today's requests and not cooling off after being busy."""
+        cool = self.s.get("model_cooloff") if isinstance(self.s.get("model_cooloff"), dict) else {}
+        return bool(model) and model not in usage._today(self.s)["out"] and float(cool.get(model, 0)) <= time.time()
 
     # ------------------------------------------------------------------ Prompt page
     def _build_prompt(self, page):
@@ -875,10 +902,23 @@ class App(ctk.CTk):
         r = srow(i, 0, "Retries when Gemini is busy", num_entry(i, self.v_retries),
                  "Every attempt counts against a free key's daily requests, even a 'busy' answer, so keep this "
                  "low (2-3).")
+        r = srow(i, r, "When a model is busy or out", ctk.CTkOptionMenu(
+            i, values=list(PROBLEM_CHOICES.values()), variable=self.v_problem, width=260, height=34),
+                 "What to do when Gemini stays busy, or a model has used up today's free requests. 'Wait' puts the "
+                 "streams on the Queue page's waiting list. Automatic Queue runs never ask: they wait unless you "
+                 "pick something else here.")
         r = srow(i, r, "Backup model", ctk.CTkComboBox(i, values=[NO_BACKUP] + ui.MODELS, variable=self.v_backup,
                                                         width=260, height=34),
-                 "Used when the main model stays overloaded (for that stream), or for the rest of the run once its "
-                 "daily limit is reached. Each model has its own free daily limit.")
+                 "Offered first when the main model is busy or out of requests. Each model has its own free daily "
+                 "limit.")
+        lf = ctk.CTkFrame(i, fg_color="transparent")
+        ctk.CTkCheckBox(lf, text="Extra accuracy for Flash-Lite models", variable=self.v_lite_helper,
+                        font=ui.font(13)).pack(side="left")
+        r = srow(i, r, "Flash-Lite helper", lf,
+                 "With a Flash-Lite model and the guided Prompt form, the app asks for the segments as data, has the "
+                 "model check its list once more (2 requests per stream instead of 1), then works out the lengths, "
+                 "merges a call that came back in pieces, and applies your minimum length itself. Stronger models "
+                 "and hand-edited prompts aren't affected.")
         srow(i, r, "Merge captions into", self._with_unit(i, self.v_merge, "second blocks (0 = off)"),
              "Fewer, longer lines use fewer tokens. Timestamps can be up to this many seconds early. 15 is a good "
              "balance; up to 60 is allowed.")
@@ -1226,11 +1266,14 @@ class App(ctk.CTk):
             s["max_retries"] = max(1, num(self.v_retries, "Retries", int))
             s["merge_seconds"] = min(60, num(self.v_merge, "Merge captions into", int))
             s["backlog_per_day"] = num(self.v_backlog_day, "Backlog streams per day", int)
+            s["backlog_model"] = self.v_backlog_model.get().strip() or "gemini-3.5-flash-lite"
         except ValueError as e:
             messagebox.showerror(APP_NAME, str(e))
             return None
         s["api_key"] = self.v_key.get().strip()
         s["model"] = self.v_model.get().strip()
+        s["model_problem_choice"] = next((k for k, v in PROBLEM_CHOICES.items() if v == self.v_problem.get()),
+                                         "ask")
         b = self.v_backup.get().strip()
         s["backup_model"] = "" if b == NO_BACKUP or b == s["model"] else b
         s["output_dir"] = self.v_out.get().strip()
@@ -1242,6 +1285,7 @@ class App(ctk.CTk):
         s["files_only"] = bool(self.v_files_only.get())
         s["check_updates"] = bool(self.v_check_updates.get())
         s["auto_runs"] = bool(self.v_auto.get())
+        s["lite_helper"] = bool(self.v_lite_helper.get())
         s["transcribe_then_timestamps"] = bool(self.v_then_ts.get())
         s["whisper_model"] = self.v_whisper.get() if self.v_whisper.get() in transcribe.MODELS else "base"
         adv = bool(self.v_adv.get())
@@ -1603,7 +1647,7 @@ class App(ctk.CTk):
 
     # ================================================================== run control
     def start(self, auto_ids: list[str] | None = None, only_files: list[str] | None = None,
-              whisper: bool = False) -> bool:
+              whisper: bool = False, model: str | None = None) -> bool:
         """Start a run. auto_ids: video ids from the Queue page (no pop-ups; the links box is left alone).
         only_files: just these caption files (a fresh transcript). whisper: transcribe the links' audio here."""
         auto = auto_ids is not None
@@ -1656,6 +1700,12 @@ class App(ctk.CTk):
                 messagebox.showerror(APP_NAME, str(e))
             return False
         cfg.use_whisper = bool(whisper)
+        if model:
+            cfg.model = model  # e.g. the backlog's own model
+        cool = self.s.get("model_cooloff") if isinstance(self.s.get("model_cooloff"), dict) else {}
+        self.s["model_cooloff"] = cfg.cooloff = {m: t for m, t in cool.items() if float(t) > time.time()}
+        cfg.out_today = tuple(usage._today(self.s)["out"])
+        cfg.model_choices = tuple(dict.fromkeys([*ui.MODELS, self.s.get("model", "")]))
         cfg.transcribe_only = transcribe_only
         self._transcribe_only_run = transcribe_only
         self._run_whisper = bool(whisper)
@@ -1671,7 +1721,8 @@ class App(ctk.CTk):
                              ", then finding the timestamps") + ". Each transcript is saved in the Transcripts "
                              "folder as soon as it's done.", "info")
         if auto:
-            self._append_log(f"Automatic run from the Queue page: {len(auto_ids)} stream(s).", "info")
+            self._append_log(f"Automatic run from the Queue page: {len(auto_ids)} stream(s), using {cfg.model}.",
+                             "info")
         self.progress.set(0)
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
@@ -1688,6 +1739,7 @@ class App(ctk.CTk):
             files=files,
             on_gemini=lambda event, model: self.q.put(("gemini", event, model)),
             discard=self.discard_event,
+            ask_problem=None if auto else self._ask_problem_from_worker,
         )
 
         def work():
@@ -1720,6 +1772,48 @@ class App(ctk.CTk):
                                                   " The part done so far is saved: transcribe the same file again "
                                                   "(or click Continue next time the app opens) to carry on."),
                                     "warn")
+
+    # ---- a model is busy or out of today's requests (asked from the run's worker thread)
+    def _ask_problem_from_worker(self, kind: str, model: str, options: list):
+        box, done = {}, threading.Event()
+        self.q.put(("ask_problem", kind, model, options, box, done))
+        while not done.wait(0.2):
+            if self.stop_event.is_set():
+                return ("cancel", "")
+        return box.get("answer", ("wait", ""))
+
+    def _on_ask_problem(self, kind: str, model: str, options: list, box: dict, done: threading.Event):
+        try:
+            box["answer"] = self._ask_problem_dialog(kind, model, options)
+        finally:
+            done.set()
+
+    def _ask_problem_dialog(self, kind: str, model: str, options: list):
+        why = ("is busy right now (Google's servers are overloaded), even after a few tries" if kind == "busy" else
+               "has used up today's free requests on your key. They reset at midnight Pacific time")
+        msg = (f"{model} {why}.\n\nWhat should the app do? Waiting puts the streams on the Queue page's waiting "
+               "list, and they run on their own later (keep the app open).")
+        buttons = [("wait", "Wait and try later", "secondary"), ("cancel", "Cancel", "ghost")]
+        select = None
+        pick = tk.StringVar(value="")
+        if options:
+            backup = self.s.get("backup_model", "")
+            pick.set(backup if backup in options else options[0])
+            buttons.insert(0, ("model", "Use this model", "primary"))
+            select = ("Instead, use:", pick, options, ui.model_note(pick.get()).split(".")[0] + ".")
+        remember = tk.BooleanVar(value=False)
+        choice = self._ask_choice("Gemini", msg, buttons, ("Remember my choice (change it later in Settings → "
+                                                            "AI requests)", remember), select) or "wait"
+        picked = pick.get() if choice == "model" else ""
+        if remember.get():
+            if choice == "model":
+                self.s["backup_model"], self.s["model_problem_choice"] = picked, "backup"
+                self.v_backup.set(picked)
+            else:
+                self.s["model_problem_choice"] = choice
+            self.v_problem.set(PROBLEM_CHOICES[self.s["model_problem_choice"]])
+            self.persist()
+        return (choice, picked)
 
     # ================================================================== queue -> UI
     def _config_log_tags(self):
@@ -1842,6 +1936,8 @@ class App(ctk.CTk):
                     self._on_finished(item[1])
                 elif kind == "update":
                     self._on_update_result(item[1], item[2], item[3])
+                elif kind == "ask_problem":
+                    self._on_ask_problem(*item[1:])
                 elif kind == "tprogress":
                     self._on_tprogress(item[1], item[2])
                 elif kind == "transcribed":
@@ -1910,6 +2006,12 @@ class App(ctk.CTk):
                               "right away instead of retrying.\n\nYour YouTube account isn't involved: the app never "
                               "signs in.\n\nWait several hours (or until tomorrow) before using links again. "
                               "Caption files from YouTube Studio work in the meantime.")
+        elif sm.get("gemini_wait"):
+            n = sum(1 for v in (sm.get("outcomes") or {}).values() if v == "waiting")
+            why = "is busy" if sm["gemini_wait"] == "busy" else "is out of today's free requests"
+            self.show_banner(f"{sm.get('gemini_wait_model')} {why}, so {n} stream{'s' if n != 1 else ''} went on "
+                             "the waiting list. They run on their own later while the app is open.", "warn",
+                             "Open Queue page", lambda: self.show_page("queue"))
         elif sm.get("needs_file"):
             n = len(sm["needs_file"])
             self.show_banner(f"{n} video{'s' if n != 1 else ''} can only be watched while signed in (age-restricted "
@@ -1935,8 +2037,6 @@ class App(ctk.CTk):
         if new:
             self._append_log(f"{len(new)} stream(s) added to the waiting list. While the app is open it checks them "
                              "about once an hour and runs them when the captions appear (Queue page).", "info")
-        if sm.get("daily_limit"):
-            worklist.pause_today(self.s)
         self.persist()
         if self.current_page == "queue":
             self.refresh_queue()

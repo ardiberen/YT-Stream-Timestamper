@@ -90,14 +90,14 @@ check(pump(lambda: a.s["last_update_check"] > 0), "startup update check ran (up 
 check(not a.banner.gridded, "no update banner when up to date")
 
 print("1b. model notes")
-check(a.s["model"] == "gemini-3.6-flash", "default model is 3.6 Flash")
+check(a.s["model"] == "gemini-4-hydrogen", "default model is Gemini 4 Hydrogen")
 notes = [l for l in a._model_notes if l.winfo_exists()]
 check(notes and "Recommended" in notes[0].kw["text"], "model note under the model box")
 a.v_model.set("gemini-4-argon")
 check("Paid keys only" in notes[0].kw["text"], "note follows the chosen model")
 a.v_model.set("my-custom-model")
 check("Custom model" in notes[0].kw["text"], "custom model name gets a generic note")
-a.v_model.set("gemini-3.6-flash")
+a.v_model.set("gemini-4-hydrogen")
 
 print("2. prompt chapters option")
 a.fv["chapters"].set(True)
@@ -205,7 +205,7 @@ a.v_max_run.set("15")
 
 print("7b. tidier pages and the request counter")
 check("requests today" in a.usage_lbl.kw["text"], "Run page shows today's Gemini requests: " + a.usage_lbl.kw["text"])
-check(a.s["gemini_usage"]["counts"].get("gemini-3.6-flash", 0) >= 3, "runs and key tests were counted")
+check(a.s["gemini_usage"]["counts"].get("gemini-4-hydrogen", 0) >= 3, "runs and key tests were counted")
 check(not a.preview_box.master.gridded, "AI instructions preview starts folded")
 a._apply_state(a.get_form(), True, "hand edited")
 check(a.preview_box.master.gridded, "advanced (hand-edited) prompt opens the preview")
@@ -282,6 +282,61 @@ a.collect()
 check(a.s["transcribe_then_timestamps"] is False, "unticking it is remembered")
 a.v_then_ts.set(True)
 a.urls_box.buf = ""
+
+print("7g. a busy model: ask, use another, remember")
+_gen = core.generate
+used = []
+def busy_gen(key, model, system, transcript):
+    used.append(model)
+    if model == a.s["model"]:
+        raise RuntimeError("503 UNAVAILABLE. The model is overloaded.")
+    return "Timestamps:\n\n00:00:05 – Caller – Length: ~5 minutes\n"
+core.generate = busy_gen
+asked = []
+def answer(title, msg, options, check=None, select=None):
+    asked.append((msg, [k for k, _, _ in options], select[2] if select else None))
+    check[1].set(True)  # remember
+    return "model"
+a._ask_choice = answer
+a.s["model_cooloff"] = {}
+a.v_problem.set(appmod.PROBLEM_CHOICES["ask"])
+a.v_max_retries = None
+a.urls_box.buf = "https://youtu.be/eeeeeeeeeee"
+FETCHED.clear()
+a.v_skip.set(False)
+a.start()
+pump(lambda: a.btn_start.kw.get("state") == "normal", timeout=15)
+check(asked and "busy right now" in asked[0][0], "asked what to do when the model stays busy")
+check(asked[0][1] == ["model", "wait", "cancel"], "offers another model, wait, or cancel")
+check(a.s["model"] not in (asked[0][2] or []), "the busy model isn't offered as the alternative")
+check(used[-1] == a.s["backup_model"], "the run carried on with the chosen model: " + used[-1])
+check(a.s["model_problem_choice"] == "backup", "the choice was remembered")
+check(a.s["model_cooloff"].get(a.s["model"], 0) > time.time(), "the busy model cools off for a while")
+asked.clear(); used.clear()
+a.start()
+pump(lambda: a.btn_start.kw.get("state") == "normal", timeout=15)
+check(not asked and used == [a.s["backup_model"]], "next run: no question, and no request to the cooling model")
+a.s["model_problem_choice"] = "ask"; a.v_problem.set(appmod.PROBLEM_CHOICES["ask"]); a.s["model_cooloff"] = {}
+core.generate = _gen
+a.v_skip.set(True)
+a.urls_box.buf = ""
+
+print("7h. backlog runs on its own model")
+seen = []
+core.generate = lambda key, model, system, transcript: seen.append(model) or "Timestamps:\n\n00:00:05 – A\n"
+_gj = core.generate_json
+core.generate_json = lambda key, model, system, contents, thinking=True: seen.append(model + " (data)") or \
+    '{"segments": [{"start": "00:05:00", "end": "00:20:00", "name": "Ann", "detail": "", "summary": ""}]}'
+a.s["last_blocked"] = 0
+worklist.add_backlog(a.s, "https://www.youtube.com/@x/streams", "@x", [("fffffffffff", "Old one")])
+check(a._maybe_auto_run() is True, "an automatic backlog run starts")
+pump(lambda: a.btn_start.kw.get("state") == "normal", timeout=10)
+check(seen == ["gemini-3.5-flash-lite (data)"] * 2, "the backlog used the backlog model, with the Lite helper's "
+      "2 requests: %r" % seen)
+core.generate_json = _gj
+check(worklist.backlog(a.s)[0]["done"] == 1, "the backlog counts it as done")
+a.s["backlog"] = []
+core.generate = _gen
 
 print("8. relaunch")
 a._on_close()

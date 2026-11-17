@@ -12,17 +12,20 @@ from version import APP_VERSION
 
 APP_NAME = "Stream Timestamper"
 VERSION = APP_VERSION
-MODELS = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"]
-# One-line notes shown under the model box. Google changes free-tier limits often, so no exact numbers here.
+MODELS = ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite",
+          "gemini-3.1-flash-lite", "gemini-4-argon"]
+LITE_MARK = "lite"  # model names containing this get the Flash-Lite helper (see core.is_lite_model)
+# One-line notes shown under the model box. The free daily numbers are Google's free-tier limits when this
+# version was made; Google changes them now and then (Google AI Studio shows the current ones for your key).
 MODEL_NOTES = {
-    "gemini-3.6-flash": "Recommended. Fast and reliable, and works with free keys (free keys get a small number "
-                        "of requests per day).",
-    "gemini-3.8-flash": "Newest Flash model. Free keys have tight daily limits and may get errors; best with a "
-                        "paid key.",
-    "gemini-3.5-flash-lite": "Fastest, with the most free requests per day. A good backup when another model hits "
-                             "its daily limit, but it may miss more segments.",
-    "gemini-4-argon": "Paid keys only (doesn't work with free keys). Most capable, but slower and costs much more "
-                      "per stream.",
+    "gemini-4-hydrogen": "Recommended. The most accurate free model in testing (finds calls and their lengths "
+                         "best). Free keys: about 20 requests a day.",
+    "gemini-3.8-flash": "Very accurate; the recommended backup. Free keys: about 20 requests a day.",
+    "gemini-3.6-flash": "Good and fast. Free keys: about 20 requests a day.",
+    "gemini-3.5-flash-lite": "Many more free requests (about 500 a day) but less accurate; the app adds extra "
+                             "checks for it. Good for working through a backlog.",
+    "gemini-3.1-flash-lite": "About 500 free requests a day, less accurate; the app adds extra checks for it.",
+    "gemini-4-argon": "Paid keys only (doesn't work with free keys).",
 }
 
 

@@ -162,6 +162,18 @@ def plan_auto_run(s: dict, max_videos: int = 20, now: Optional[float] = None) ->
     return ids
 
 
+def plan_split(s: dict, max_videos: int = 20, waiting_ok: bool = True, backlog_ok: bool = True,
+               now: Optional[float] = None) -> tuple[list[str], list[str]]:
+    """(waiting ids, backlog ids) for the next automatic run. They run separately, because the backlog can use
+    its own model. waiting_ok / backlog_ok: whether that list's model can be used right now."""
+    if paused_today(s, now):
+        return [], []
+    waiting_ids = due_waiting(s, now)[: max_videos or None] if waiting_ok else []
+    if waiting_ids or not backlog_ok:
+        return waiting_ids, []
+    return [], next_backlog(s, min(max_videos or 10 ** 6, backlog_left_today(s, now)))
+
+
 def apply_outcomes(s: dict, outcomes: dict, waiting_titles: dict | None = None,
                    now: Optional[float] = None) -> None:
     """Update both lists from a run's {video id: done | skipped | failed | waiting}."""
