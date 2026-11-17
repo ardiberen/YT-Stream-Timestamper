@@ -57,6 +57,7 @@ YouTube can take hours to make captions after a long stream. Click **Transcribe 
 
 - If there are links in the box, it asks whether to transcribe **those links**: the app downloads just each stream's audio (the smallest audio-only version, logged out, with the same pacing and stop-on-block rules as captions), transcribes it on your PC, then finds the timestamps, all in one go. The audio is deleted once it's transcribed.
 - Or choose **a recording you already have** (your OBS file, or any video/audio file). The timestamps follow automatically too.
+- **Also find the timestamps** (ticked by default, remembered): untick it in that window, or in Settings → Transcribing recordings, to make transcripts only. That needs no Gemini key and uses no Gemini requests; the transcripts are listed on the Run page so you can press Start for their timestamps whenever you like.
 
 How the transcribing works (Whisper, via faster-whisper):
 

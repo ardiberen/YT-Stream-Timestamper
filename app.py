@@ -38,6 +38,7 @@ SPLIT_TOP_MIN, SPLIT_BOTTOM_MIN = 64, 200  # Run page: smallest links area / con
 MAX_LOG_LINES = 5000
 NAV = [("run", "▶", "Run"), ("queue", "⏳", "Queue"), ("prompt", "✎", "Prompt"), ("results", "☰", "Results"),
        ("settings", "⚙", "Settings")]
+THEN_TS_TEXT = "Also find the timestamps right after transcribing (untick for transcripts only)"
 AUTO_TICK_MS = 60_000  # how often the Queue page looks for work while the app is open
 PAGE_TEXT = {
     "run": ("Run", "Paste stream links (or add caption files) and press Start."),
@@ -82,6 +83,7 @@ class App(ctk.CTk):
         self._split_placed = False
         self._split_h = 0
         self._auto_run = False  # the current run was started by the Queue page
+        self._transcribe_only_run = False
         self._transcribing = False
         self._backlog_listing = False
         self._split_before = 0
@@ -122,6 +124,7 @@ class App(ctk.CTk):
         self.v_backlog_url = sv(value="")
         self.v_backlog_day = sv(value=n(s.get("backlog_per_day", worklist.BACKLOG_PER_DAY)))
         self.v_whisper = sv(value=s.get("whisper_model") or transcribe.DEFAULT_MODEL)
+        self.v_then_ts = bv(value=bool(s.get("transcribe_then_timestamps", True)))
         self.v_skip = bv(value=s["skip_existing"])
         self.v_raw = bv(value=s["save_transcript"])
         self.v_appearance = sv(value=str(s.get("appearance", "System")).capitalize())
@@ -878,6 +881,8 @@ class App(ctk.CTk):
 
         i = add_card("Transcribing recordings", "Turn a recording on this PC into captions with Whisper, with no "
                                                 "wait for YouTube's captions.", folded=True)
+        ctk.CTkCheckBox(i, text=THEN_TS_TEXT, variable=self.v_then_ts, font=ui.font(13)).grid(
+            row=2, column=1, sticky="w", pady=(12, 0))
         srow(i, 0, "Speech model", ctk.CTkOptionMenu(i, values=list(transcribe.MODELS), variable=self.v_whisper,
                                                        width=130, height=34),
              "base: " + transcribe.MODELS["base"][1] + ". small: " + transcribe.MODELS["small"][1] + ". Each is "
@@ -1020,8 +1025,8 @@ class App(ctk.CTk):
         self.btn_clear_files.grid()
 
     # ================================================================== transcribing a recording
-    def _ask_choice(self, title, message, options):
-        return ui.ask_choice(self, title, message, options)
+    def _ask_choice(self, title, message, options, check=None):
+        return ui.ask_choice(self, title, message, options, check)
 
     def _links_in_box(self) -> list[str]:
         if self.s.get("files_only") or self.v_files_only.get():
@@ -1050,21 +1055,28 @@ class App(ctk.CTk):
             messagebox.showinfo(APP_NAME, "Wait for the current run to finish first (or press Stop).")
             return
         links = self._links_in_box()
+        check = ("Also find the timestamps (untick for transcripts only)", self.v_then_ts)
         if links:
             n = len(links)
             what = "this link" if n == 1 else f"these {n} links"
             choice = self._ask_choice(
-                "Transcribe", f"Transcribe {what} on this PC, then find the timestamps?\n\nThe app downloads just "
-                              "the audio (logged out), turns it into a transcript with Whisper, then asks Gemini for "
-                              "the timestamps, all in one go. Transcripts are kept in the Transcripts folder.",
+                "Transcribe", f"Transcribe {what} on this PC?\n\nThe app downloads just the audio (logged out) and "
+                              "turns it into a transcript with Whisper. Transcripts are kept in the Transcripts "
+                              "folder.",
                 [("links", "Yes, transcribe " + ("the link" if n == 1 else "the links"), "primary"),
-                 ("file", "Choose a file instead", "secondary"), ("cancel", "Cancel", "ghost")])
-            if choice == "links":
-                if self._whisper_ready():
-                    self.start(whisper=True)
-                return
-            if choice != "file":
-                return
+                 ("file", "Choose a file instead", "secondary"), ("cancel", "Cancel", "ghost")], check)
+        else:
+            choice = self._ask_choice(
+                "Transcribe", "Choose a recording (video or audio file) to transcribe on this PC with Whisper.\n\n"
+                              "Tip: paste links in the box first to transcribe those instead.",
+                [("file", "Choose a file", "primary"), ("cancel", "Cancel", "ghost")], check)
+        self.s["transcribe_then_timestamps"] = bool(self.v_then_ts.get())
+        if choice == "links":
+            if self._whisper_ready():
+                self.start(whisper=True)
+            return
+        if choice != "file":
+            return
         exts = " ".join("*" + e for e in transcribe.MEDIA_EXTS)
         path = filedialog.askopenfilename(title="Choose a stream recording (video or audio)",
                                           filetypes=[("Recordings", exts), ("All files", "*.*")])
@@ -1133,6 +1145,13 @@ class App(ctk.CTk):
 
     def _on_transcribed(self, path: str, srt: str):
         self.progress.set(1)
+        if not self.v_then_ts.get():
+            if srt not in self.caption_files:
+                self.caption_files.append(srt)
+            self._refresh_files_label()
+            self._end_transcription(f"Transcript saved: {srt}. It's also listed under caption files above: press "
+                                    "Start whenever you want its timestamps.", "ok")
+            return
         self._end_transcription(f"Transcript saved: {srt}. Now finding the timestamps ...", "ok")
         if not self.start(only_files=[srt]):  # e.g. no API key yet: keep it ready on the Run page instead
             if srt not in self.caption_files:
@@ -1206,6 +1225,7 @@ class App(ctk.CTk):
         s["files_only"] = bool(self.v_files_only.get())
         s["check_updates"] = bool(self.v_check_updates.get())
         s["auto_runs"] = bool(self.v_auto.get())
+        s["transcribe_then_timestamps"] = bool(self.v_then_ts.get())
         s["whisper_model"] = self.v_whisper.get() if self.v_whisper.get() in transcribe.MODELS else "base"
         adv = bool(self.v_adv.get())
         s["prompt_mode"] = "advanced" if adv else "guided"
@@ -1562,18 +1582,19 @@ class App(ctk.CTk):
         """Start a run. auto_ids: video ids from the Queue page (no pop-ups; the links box is left alone).
         only_files: just these caption files (a fresh transcript). whisper: transcribe the links' audio here."""
         auto = auto_ids is not None
+        transcribe_only = bool(whisper) and not self.v_then_ts.get()
         if self._busy():
             if not auto and self._transcribing:
                 messagebox.showinfo(APP_NAME, "A recording is being transcribed. Wait for it, or press Stop.")
             return False
         if self.collect() is None:
             return False
-        if not self.s["api_key"]:
+        if not self.s["api_key"] and not transcribe_only:
             if not auto and messagebox.askyesno(APP_NAME, "You haven't added your Gemini API key yet. Set it up now?"):
                 self.open_wizard("gemini")
             return False
         self.refresh_status()
-        if self.s["prompt_mode"] == "guided":
+        if self.s["prompt_mode"] == "guided" and not transcribe_only:
             errs = pb.validate_form(self.s["form"])
             if errs:
                 if not auto:
@@ -1587,7 +1608,8 @@ class App(ctk.CTk):
             urls, files = "", list(only_files)
         else:
             urls = "" if files_only else self.urls_box.get("1.0", "end")
-            files = [f for f in self.caption_files if os.path.isfile(f)]
+            # "Transcribe the links" is about the links only; listed caption files wait for the next Start
+            files = [] if whisper else [f for f in self.caption_files if os.path.isfile(f)]
         if not urls.strip() and not files:
             messagebox.showinfo(APP_NAME, "Add a caption file first." if files_only else
                                 "Paste at least one YouTube link or add a caption file first.")
@@ -1609,6 +1631,8 @@ class App(ctk.CTk):
                 messagebox.showerror(APP_NAME, str(e))
             return False
         cfg.use_whisper = bool(whisper)
+        cfg.transcribe_only = transcribe_only
+        self._transcribe_only_run = transcribe_only
         self._auto_run = auto
 
         self.stop_event.clear()
@@ -1616,8 +1640,9 @@ class App(ctk.CTk):
             self._clear_log()
         self.runlog.start(self._log_header(cfg, urls, files))
         if whisper:
-            self._append_log("Transcribing the links on this PC, then finding the timestamps. Each transcript is "
-                             "saved in the Transcripts folder as soon as it's done.", "info")
+            self._append_log("Transcribing the links on this PC" + (" (transcripts only)" if transcribe_only else
+                             ", then finding the timestamps") + ". Each transcript is saved in the Transcripts "
+                             "folder as soon as it's done.", "info")
         if auto:
             self._append_log(f"Automatic run from the Queue page: {len(auto_ids)} stream(s).", "info")
         self.progress.set(0)
@@ -1800,7 +1825,9 @@ class App(ctk.CTk):
         self.btn_stop.configure(state="disabled")
         self._restore_links()
         auto, self._auto_run = self._auto_run, False
-        text = f"Finished: {sm['done']} saved, {sm['skipped']} skipped, {sm['failed']} failed"
+        only, self._transcribe_only_run = self._transcribe_only_run, False
+        text = f"Finished: {sm['done']} {'transcribed' if only else 'saved'}, {sm['skipped']} skipped, " \
+               f"{sm['failed']} failed"
         if sm.get("waiting"):
             text += f", {sm['waiting']} waiting for captions"
         text += "."
@@ -1810,7 +1837,15 @@ class App(ctk.CTk):
             text = "Automatic run: " + text
         self.status_lbl.configure(text=text)
         self._append_log(text, "ok" if not sm["failed"] else "warn")
-        self._update_worklist(sm)
+        if only and sm.get("transcribed"):
+            for srt in sm["transcribed"]:
+                if srt not in self.caption_files:
+                    self.caption_files.append(srt)
+            self._refresh_files_label()
+            self._append_log("The transcripts are listed under caption files above: press Start whenever you want "
+                             "their timestamps.", "info")
+        if not only:
+            self._update_worklist(sm)
         if sm.get("saved"):
             self._pending_select = sm["saved"][0]
             self.btn_view.configure(fg_color=ui.ACCENT, hover_color=ui.ACCENT_HOVER, text_color="#ffffff",

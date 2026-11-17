@@ -98,6 +98,7 @@ class RunConfig:
     backup_model: str = ""  # used when the main model is overloaded or out of daily requests ("" = none)
     merge_seconds: int = 15  # caption lines are merged into blocks this long before sending (0 = off)
     use_whisper: bool = False  # links: download the audio and transcribe it here instead of YouTube's captions
+    transcribe_only: bool = False  # with use_whisper: stop at the transcript (no Gemini, nothing else needed)
     whisper_model: str = "base"
 
     @classmethod
@@ -480,6 +481,16 @@ def video_id_from_result(path: str) -> str:
     return m.group(1) if m else ""
 
 
+def find_existing_transcript(output_dir: str, video_id: str) -> Optional[str]:
+    try:
+        for name in os.listdir(os.path.join(output_dir, "Transcripts")):
+            if name.endswith(f"[{video_id}].srt"):
+                return name
+    except OSError:
+        pass
+    return None
+
+
 def find_existing_output(output_dir: str, video_id: str) -> Optional[str]:
     try:
         for name in os.listdir(output_dir):
@@ -783,6 +794,7 @@ class Runner:
         self.saved: list[str] = []
         self.needs_file: list[str] = []  # videos that can't be read logged out (age-restricted etc.)
         self.waiting: list[tuple[str, str]] = []  # (video id, title): still live or no captions yet
+        self.transcribed: list[str] = []  # transcripts made in a transcribe-only run
         self._deno = find_deno()
         self._model = cfg.model  # switches to cfg.backup_model for the rest of the run if the daily limit is hit
         self._whisper_model = None  # loaded once per run, only when transcribing
@@ -802,6 +814,12 @@ class Runner:
 
     def _validate(self):
         c = self.cfg
+        if c.use_whisper and c.transcribe_only:  # only transcripts: no Gemini, so no key or prompt needed
+            if not c.output_dir:
+                raise RuntimeError("Choose an output folder in Settings.")
+            if not self.urls_text.strip():
+                raise RuntimeError("Paste at least one YouTube link first.")
+            return
         if not c.api_key:
             raise RuntimeError("Enter your Gemini API key in Settings.")
         if not c.model:
@@ -930,7 +948,8 @@ class Runner:
         """Return (status, touched_youtube). status: done | skipped | failed."""
         c = self.cfg
         if c.skip_existing:
-            ex = find_existing_output(c.output_dir, vid)
+            ex = find_existing_transcript(c.output_dir, vid) if c.use_whisper and c.transcribe_only else \
+                find_existing_output(c.output_dir, vid)
             if ex:
                 self.log(f"Skipping {vid}: already have '{ex}'")
                 return "skipped", False
@@ -1047,6 +1066,9 @@ class Runner:
             except OSError:
                 pass
             self.log(f"Transcript saved: Transcripts\\{srt.name}", "ok")
+        if c.transcribe_only:
+            self.transcribed.append(str(srt))
+            return "done"
         lines = parse_caption_text(srt.read_text(encoding="utf-8", errors="replace"), ".srt")
         if not lines:
             self.log(f"{vid}: the transcript is empty (no speech found).", "error")
@@ -1255,4 +1277,5 @@ class Runner:
             summary["saved"] = list(self.saved)
             summary["needs_file"] = list(self.needs_file)
             summary["waiting_list"] = list(self.waiting)
+            summary["transcribed"] = list(self.transcribed)
         return summary

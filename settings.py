@@ -94,7 +94,8 @@ DEFAULTS = {
     "backlog": [],  # older streams to work through, a few per day (see worklist.py)
     "backlog_per_day": 5,
     "auto_day": {},  # today's backlog count / daily-limit pause (Pacific date)
-    "whisper_model": "base",  # speech model for "Transcribe a recording" (base or small)
+    "whisper_model": "base",
+    "transcribe_then_timestamps": True,  # after transcribing, go straight on to finding the timestamps  # speech model for "Transcribe a recording" (base or small)
     "backup_model": "gemini-3.5-flash-lite",  # tried when the main model is overloaded or out of daily requests
     "prompts": {},  # user presets: name -> {"mode", "form", "text"} (old versions stored a plain string)
     "selected_prompt": "",  # label of the preset shown, or "" for none

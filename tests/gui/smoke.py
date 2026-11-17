@@ -264,6 +264,24 @@ if not _tr.available():
     a.transcribe_recording()
     check(messagebox.CALLS and "isn't included" in messagebox.CALLS[-1][1], "explains when Whisper isn't in this copy")
 
+print("7f. transcribe prompt and its tick box")
+asked = []
+a._ask_choice = lambda title, msg, options, check=None: asked.append((msg, [k for k, _, _ in options], check)) or "cancel"
+a.urls_box.buf = ""
+a.transcribe_recording() if _tr.available() else None
+a.urls_box.buf = "https://youtu.be/aaaaaaaaaaa"
+if _tr.available():
+    a.transcribe_recording()
+    check(asked[-1][1] == ["links", "file", "cancel"], "links in the box: offers them, a file, or cancel")
+    check(asked[0][1] == ["file", "cancel"], "no links: choose a file or cancel")
+    check(asked[-1][2][1] is a.v_then_ts and a.v_then_ts.get(), "'also find the timestamps' is ticked by default")
+check(a.s.get("transcribe_then_timestamps", True) is True, "setting defaults to doing everything in one go")
+a.v_then_ts.set(False)
+a.collect()
+check(a.s["transcribe_then_timestamps"] is False, "unticking it is remembered")
+a.v_then_ts.set(True)
+a.urls_box.buf = ""
+
 print("8. relaunch")
 a._on_close()
 saved = json.loads(settings.settings_path().read_text())

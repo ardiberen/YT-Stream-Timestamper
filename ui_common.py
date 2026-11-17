@@ -266,9 +266,11 @@ class ScrollFrame(ctk.CTkScrollableFrame):
         self._glide_job = self.after(GLIDE_MS, self._glide)
 
 
-def ask_choice(parent, title: str, message: str, options: list[tuple[str, str, str]]) -> str | None:
+def ask_choice(parent, title: str, message: str, options: list[tuple[str, str, str]],
+               check: tuple | None = None) -> str | None:
     """A small window with a message and one button per option [(key, label, kind)]. Returns the key clicked,
-    or None if it was closed. Blocks until answered, like a message box."""
+    or None if it was closed. Blocks until answered, like a message box. check: optional (text, BooleanVar)
+    shown as a tick box above the buttons."""
     win = ctk.CTkToplevel(parent)
     win.title(title)
     win.configure(fg_color=CONTENT_BG)
@@ -276,6 +278,9 @@ def ask_choice(parent, title: str, message: str, options: list[tuple[str, str, s
     win.transient(parent)
     answer: list = [None]
     label(win, message, 14, wrap=460).pack(padx=24, pady=(22, 16), anchor="w")
+    if check:
+        ctk.CTkCheckBox(win, text=check[0], variable=check[1], font=font(14)).pack(padx=24, pady=(0, 16),
+                                                                                   anchor="w")
     row = ctk.CTkFrame(win, fg_color="transparent")
     row.pack(padx=24, pady=(0, 20), anchor="e")
 

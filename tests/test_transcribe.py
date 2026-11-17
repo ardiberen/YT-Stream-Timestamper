@@ -183,6 +183,19 @@ class LinkTranscribeTests(unittest.TestCase):
         self.assertEqual(self.downloads, [])
         self.assertTrue(any("downloaded earlier" in m for m in logs))
 
+    def test_transcripts_only(self):
+        r, logs = self.runner(transcribe_only=True)
+        r.cfg.api_key, r.cfg.prompt = "", ""  # no Gemini key or prompt needed
+        sm = r.run()
+        self.assertEqual((sm["done"], sm["error"]), (1, ""), logs)
+        self.assertEqual(self.sent, [])  # Gemini never asked
+        self.assertTrue(Path(self.out, "Transcripts", "Big Debate [aaaaaaaaaaa].srt").exists())
+        self.assertFalse(Path(self.out, "Big Debate [aaaaaaaaaaa].txt").exists())
+        self.assertEqual([Path(p).name for p in sm["transcribed"]], ["Big Debate [aaaaaaaaaaa].srt"])
+        r2, logs2 = self.runner(transcribe_only=True)
+        self.assertEqual(r2.run()["skipped"], 1)  # already transcribed: not downloaded again
+        self.assertEqual(self.downloads, ["aaaaaaaaaaa"])
+
     def test_caption_file_named_with_video_id_gets_a_linkable_result(self):
         srt = Path(self.out, "Old Stream [bbbbbbbbbbb].srt")
         srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nhi\n", encoding="utf-8")
