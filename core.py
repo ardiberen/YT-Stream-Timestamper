@@ -142,7 +142,7 @@ class RunConfig:
             backup_model=str(s.get("backup_model", "")).strip(),
             merge_seconds=int(s.get("merge_seconds", 15)),
             whisper_model=str(s.get("whisper_model") or "base"),
-            problem_choice=str(s.get("model_problem_choice") or "ask"),
+            problem_choice=str(s.get("model_problem_choice") or "backup"),
             form=dict(s["form"]) if s.get("prompt_mode", "guided") == "guided" and isinstance(s.get("form"), dict)
             else None,
             lite_helper=bool(s.get("lite_helper", True)),
@@ -179,6 +179,33 @@ _RETRY_DELAY_RE = re.compile(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s"
 def retry_delay_seconds(msg: str) -> Optional[float]:
     m = _RETRY_DELAY_RE.search(msg or "")
     return float(m.group(1)) if m else None
+
+
+_ERR_CODE_RE = re.compile(r"\b([45]\d\d)\b\s*([A-Z_]{4,})?")
+_ERR_TEXT_RE = re.compile(r"""['"]message['"]\s*:\s*['"]([^'"]{1,160})""")
+
+
+def gemini_error_brief(msg: str) -> str:
+    """A short 'what Google actually said' for the log, e.g. '503 UNAVAILABLE: The model is overloaded.', so a
+    real overload (503) can be told apart from a rate limit (429) or a timeout. Never contains the API key (the
+    run log removes it anyway)."""
+    msg = msg or ""
+    code = _ERR_CODE_RE.search(msg)
+    text = _ERR_TEXT_RE.search(msg)
+    head = " ".join(x for x in (code.groups() if code else ()) if x)
+    tail = text.group(1).strip() if text else ("" if head else msg.strip().splitlines()[0][:160] if msg.strip()
+                                               else "")
+    return ": ".join(x for x in (head, tail) if x) or "no details"
+
+
+def gemini_problem_kind(msg: str) -> str:
+    """Plain words for a retryable Gemini error: busy (server overloaded), rate limit (sending too fast), or
+    timed out."""
+    if re.search(r"\b429\b|RESOURCE_EXHAUSTED", msg or "", re.I):
+        return "rate limit (too many requests per minute)"
+    if OVERLOADED_RE.search(msg or ""):
+        return "busy (Google's servers are overloaded)"
+    return "timed out" if re.search(r"timed? ?out", msg or "", re.I) else "error"
 
 
 CAPTION_FILE_EXTS = (".vtt", ".srt", ".sbv", ".json3", ".json", ".tsv")
@@ -1422,6 +1449,10 @@ class Runner:
         attempt = 0
         while True:
             if not self._available(self._model):
+                until = (self.cfg.cooloff or {}).get(self._model, 0)
+                if until > time.time() and self._model not in self.cfg.out_today and self._model not in self._out:
+                    self.log(f"{self._model} was busy a few minutes ago, so it isn't being asked again until "
+                             f"{time.strftime('%H:%M', time.localtime(until))} (no request sent).", "warn")
                 self._model_problem("out" if (self._model in self.cfg.out_today or self._model in self._out)
                                     else "busy")
                 daily_checked, attempt = False, 0
@@ -1453,7 +1484,9 @@ class Runner:
                     daily_checked, attempt = False, 0
                     continue
                 if RETRYABLE_RE.search(msg):
+                    brief = gemini_error_brief(msg)
                     if attempt >= self.cfg.max_retries and OVERLOADED_RE.search(msg):
+                        self.log(f"{self._model} still failing after {attempt} tries. Google said: {brief}", "warn")
                         self._model_problem("busy")  # it stayed busy for every try
                         daily_checked, attempt = False, 0
                         continue
@@ -1462,7 +1495,8 @@ class Runner:
                         if wait is None:
                             wait = min(300.0, 30.0 * 2 ** (attempt - 1)) * random.uniform(0.8, 1.2)
                         wait = min(max(wait, 5.0), 600.0)
-                        self.log(f"Gemini busy (attempt {attempt}/{self.cfg.max_retries}). Retrying in {wait:.0f}s ...",
+                        self.log(f"Gemini {gemini_problem_kind(msg)} on {self._model} (attempt {attempt}/"
+                                 f"{self.cfg.max_retries}; Google said: {brief}). Retrying in {wait:.0f}s ...",
                                  "warn")
                         self._sleep(wait)
                         continue

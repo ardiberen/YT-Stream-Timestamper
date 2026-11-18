@@ -98,9 +98,15 @@ DEFAULTS = {
     "whisper_model": "base",
     "transcribe_then_timestamps": True,
     "lite_helper": True,  # Flash-Lite models: segments as data, app does the maths, plus a checking pass
-    "model_problem_choice": "ask",  # a model is busy / out of requests: ask | backup | wait | cancel
+    # a model is busy / out of requests: ask | backup | wait | cancel. Default: switch to the backup (Flash-Lite)
+    # without asking, so free keys keep working while Google answers "busy" for the other models
+    "model_problem_choice": "backup",
+    "problem_default_v2": False,  # True once an old install's untouched "ask" default was moved to "backup"
     "model_cooloff": {},  # {model: until epoch}: a busy model is left alone for 15 minutes  # after transcribing, go straight on to finding the timestamps  # speech model for "Transcribe a recording" (base or small)
-    "backup_model": "gemini-3.8-flash",  # offered when the main model is busy or out of today's requests
+    # offered when the main model is busy or out of today's requests. Flash-Lite: free keys often get "busy"
+    # (503) from every Flash/Pro model at once while Flash-Lite still answers, and it has ~500 free requests a day
+    "backup_model": "gemini-3.5-flash-lite",
+    "backup_default_v2": False,  # True once an old install's untouched backup default was moved to Flash-Lite
     "prompts": {},  # user presets: name -> {"mode", "form", "text"} (old versions stored a plain string)
     "selected_prompt": "",  # label of the preset shown, or "" for none
     "default_prompt": "",  # preset label to load on startup, or "" to restore the last session
@@ -180,6 +186,9 @@ def decrypt_secret(token: str) -> str | None:
         return None
 
 
+OLD_BACKUP_DEFAULT = "gemini-3.8-flash"
+
+
 def load(path: Path | None = None) -> dict:
     path = path or settings_path()
     data = copy.deepcopy(DEFAULTS)
@@ -198,6 +207,17 @@ def load(path: Path | None = None) -> dict:
                 pass
     if not isinstance(data.get("prompts"), dict):
         data["prompts"] = {}
+    # Older versions saved 3.8 Flash as the backup by default; it goes "busy" together with the main model on
+    # free keys, so move installs that still have it to the new default once. A choice made later is kept.
+    if not data.get("backup_default_v2"):
+        if data.get("backup_model") == OLD_BACKUP_DEFAULT:
+            data["backup_model"] = DEFAULTS["backup_model"]
+        data["backup_default_v2"] = True
+    # Older versions asked every time by default; switch installs that still have that default once.
+    if not data.get("problem_default_v2"):
+        if data.get("model_problem_choice") == "ask":
+            data["model_problem_choice"] = DEFAULTS["model_problem_choice"]
+        data["problem_default_v2"] = True
     if not data.get("output_dir"):
         data["output_dir"] = default_output_dir()
     # the API key lives in memory as plain text; on disk it is encrypted when possible

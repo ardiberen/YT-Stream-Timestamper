@@ -20,10 +20,10 @@ LITE_MARK = "lite"  # model names containing this get the Flash-Lite helper (see
 MODEL_NOTES = {
     "gemini-4-hydrogen": "Recommended. The most accurate free model in testing (finds calls and their lengths "
                          "best). Free keys: about 20 requests a day.",
-    "gemini-3.8-flash": "Very accurate; the recommended backup. Free keys: about 20 requests a day.",
+    "gemini-3.8-flash": "Very accurate. Free keys: about 20 requests a day.",
     "gemini-3.6-flash": "Good and fast. Free keys: about 20 requests a day.",
     "gemini-3.5-flash-lite": "Many more free requests (about 500 a day) but less accurate; the app adds extra "
-                             "checks for it. Good for working through a backlog.",
+                             "checks for it. The default backup, and good for working through a backlog.",
     "gemini-3.1-flash-lite": "About 500 free requests a day, less accurate; the app adds extra checks for it.",
     "gemini-4-argon": "Paid keys only (doesn't work with free keys).",
 }

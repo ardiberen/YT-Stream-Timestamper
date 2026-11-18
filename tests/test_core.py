@@ -165,6 +165,39 @@ class MiscTests(unittest.TestCase):
             self.assertEqual(core.find_existing_output(d, "abcdefghijk"), "Title [abcdefghijk].txt")
             self.assertIsNone(core.find_existing_output(d, "zzzzzzzzzzz"))
 
+    def test_backup_default_moves_to_flash_lite_once(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "s.json")
+            self.assertEqual(settings.load(p)["backup_model"], "gemini-3.5-flash-lite")  # fresh install
+            p.write_text(json.dumps({"backup_model": "gemini-3.8-flash"}))  # old install, old default
+            s = settings.load(p)
+            self.assertEqual(s["backup_model"], "gemini-3.5-flash-lite")
+            s["backup_model"] = "gemini-3.8-flash"  # chosen again afterwards: kept
+            settings.save(s, p)
+            self.assertEqual(settings.load(p)["backup_model"], "gemini-3.8-flash")
+            p.write_text(json.dumps({"backup_model": "gemini-3.6-flash"}))  # old install, own choice: kept
+            self.assertEqual(settings.load(p)["backup_model"], "gemini-3.6-flash")
+            p.write_text(json.dumps({"backup_model": ""}))  # old install, no backup chosen: kept
+            self.assertEqual(settings.load(p)["backup_model"], "")
+
+    def test_busy_choice_default_moves_to_backup_once(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "s.json")
+            self.assertEqual(settings.load(p)["model_problem_choice"], "backup")  # fresh install
+            # old install with the old "ask" default, even one that already ran the backup-model switch
+            p.write_text(json.dumps({"model_problem_choice": "ask", "backup_default_v2": True}))
+            s = settings.load(p)
+            self.assertEqual(s["model_problem_choice"], "backup")
+            s["model_problem_choice"] = "ask"  # chosen again afterwards: kept
+            settings.save(s, p)
+            self.assertEqual(settings.load(p)["model_problem_choice"], "ask")
+            p.write_text(json.dumps({"model_problem_choice": "wait"}))  # old install, own choice: kept
+            self.assertEqual(settings.load(p)["model_problem_choice"], "wait")
+            self.assertEqual(core.RunConfig.from_settings({**settings.DEFAULTS, "api_key": "k", "prompt": "p",
+                                                           "output_dir": d}).problem_choice, "backup")
+
     def test_settings_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d, "s.json")
@@ -1046,6 +1079,16 @@ if __name__ == "__main__":
 
 
 class GeminiRetryTests(FakeRunTests):
+    def test_error_brief_names_the_real_problem(self):
+        busy = "503 UNAVAILABLE. {'error': {'code': 503, 'message': 'The model is overloaded.', 'status': 'x'}}"
+        rate = "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota'}}"
+        self.assertEqual(core.gemini_error_brief(busy), "503 UNAVAILABLE: The model is overloaded.")
+        self.assertEqual(core.gemini_error_brief(rate), "429 RESOURCE_EXHAUSTED: You exceeded your current quota")
+        self.assertIn("busy", core.gemini_problem_kind(busy))
+        self.assertIn("rate limit", core.gemini_problem_kind(rate))
+        self.assertEqual(core.gemini_problem_kind("The read operation timed out"), "timed out")
+        self.assertEqual(core.gemini_error_brief(""), "no details")
+
     def test_busy_for_every_try_then_backup_and_cooloff(self):
         models, waits = [], []
 

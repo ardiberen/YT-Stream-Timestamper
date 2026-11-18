@@ -284,6 +284,8 @@ a.v_then_ts.set(True)
 a.urls_box.buf = ""
 
 print("7g. a busy model: ask, use another, remember")
+check(a.s["model_problem_choice"] == "backup", "switching to the backup is the default")
+a.s["model_problem_choice"] = "ask"; a.v_problem.set(appmod.PROBLEM_CHOICES["ask"])
 _gen = core.generate
 used = []
 def busy_gen(key, model, system, transcript):
