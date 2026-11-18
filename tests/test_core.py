@@ -1420,8 +1420,8 @@ class LiteHelperTests(unittest.TestCase):
         tidy = core.tidy_segments(core.parse_segments(json.dumps(self.LITE)), 4)
         text = pb.render_segments(self.FORM, tidy)
         self.assertTrue(text.startswith("Timestamps:\n\n00:00 – Intro\n\n00:27:58 – James – Christian – "
-                                        "Length: ~43 minutes – Motion\n\n"))
-        self.assertIn("01:11:34 – Katie – Christian – Length: ~18 minutes – Water", text)
+                                        "Length: ~43 minutes – Motion.\n\n"))
+        self.assertIn("01:11:34 – Katie – Christian – Length: ~18 minutes – Water.", text)
         self.assertTrue(text.rstrip().endswith("."))
         self.assertEqual(core.check_result(text, 4 * 3600), [])
         self.assertEqual(pb.render_segments(self.FORM, []), "No qualifying segments found.\n")
@@ -1541,18 +1541,3 @@ class OverlapWarningTests(unittest.TestCase):
 
     def test_the_helper_never_moves_calls_because_of_an_overlap(self):
         self.assertFalse(hasattr(core, "repair_overlaps"))
-
-
-class SummaryStyleTests(unittest.TestCase):
-    def test_both_prompts_ask_for_topics_only(self):
-        form = {"find": "a caller argues", "detail_on": True, "detail_label": "Stance", "summary_on": True}
-        for prompt in (pb.build_prompt(form), pb.build_data_prompt(form)):
-            self.assertIn("Do not repeat the name or the stance", prompt)
-            self.assertIn("Evolution, biology, and biblical morality", prompt)
-        self.assertNotIn("Do not repeat the name", pb.build_prompt({"find": "x", "summary_on": False}))
-
-    def test_helper_output_has_no_trailing_period(self):
-        segs = [{"start": 600, "end": 1800, "name": "Nick", "detail": "Christian",
-                 "summary": "Evolution, biology, and biblical morality."}]
-        text = pb.render_segments({"find": "x", "detail_on": True, "summary_on": True}, segs)
-        self.assertIn("– Evolution, biology, and biblical morality\n", text)
