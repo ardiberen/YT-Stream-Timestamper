@@ -165,6 +165,22 @@ class MiscTests(unittest.TestCase):
             self.assertEqual(core.find_existing_output(d, "abcdefghijk"), "Title [abcdefghijk].txt")
             self.assertIsNone(core.find_existing_output(d, "zzzzzzzzzzz"))
 
+    def test_backup_default_moves_to_flash_lite_once(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "s.json")
+            self.assertEqual(settings.load(p)["backup_model"], "gemini-3.5-flash-lite")  # fresh install
+            p.write_text(json.dumps({"backup_model": "gemini-3.8-flash"}))  # old install, old default
+            s = settings.load(p)
+            self.assertEqual(s["backup_model"], "gemini-3.5-flash-lite")
+            s["backup_model"] = "gemini-3.8-flash"  # chosen again afterwards: kept
+            settings.save(s, p)
+            self.assertEqual(settings.load(p)["backup_model"], "gemini-3.8-flash")
+            p.write_text(json.dumps({"backup_model": "gemini-3.6-flash"}))  # old install, own choice: kept
+            self.assertEqual(settings.load(p)["backup_model"], "gemini-3.6-flash")
+            p.write_text(json.dumps({"backup_model": ""}))  # old install, no backup chosen: kept
+            self.assertEqual(settings.load(p)["backup_model"], "")
+
     def test_settings_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d, "s.json")
