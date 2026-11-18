@@ -127,7 +127,7 @@ class App(ctk.CTk):
         self.v_retries = sv(value=n(s["max_retries"]))
         self.v_backup = sv(value=s.get("backup_model", "") or NO_BACKUP)
         self.v_merge = sv(value=n(s.get("merge_seconds", 15)))
-        self.v_problem = sv(value=PROBLEM_CHOICES.get(s.get("model_problem_choice") or "ask",
+        self.v_problem = sv(value=PROBLEM_CHOICES.get(s.get("model_problem_choice") or "backup",
                                                       PROBLEM_CHOICES["ask"]))
         self.v_auto = bv(value=bool(s.get("auto_runs", True)))
         self.v_lite_helper = bv(value=bool(s.get("lite_helper", True)))

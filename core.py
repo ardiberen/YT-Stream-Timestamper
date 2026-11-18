@@ -142,7 +142,7 @@ class RunConfig:
             backup_model=str(s.get("backup_model", "")).strip(),
             merge_seconds=int(s.get("merge_seconds", 15)),
             whisper_model=str(s.get("whisper_model") or "base"),
-            problem_choice=str(s.get("model_problem_choice") or "ask"),
+            problem_choice=str(s.get("model_problem_choice") or "backup"),
             form=dict(s["form"]) if s.get("prompt_mode", "guided") == "guided" and isinstance(s.get("form"), dict)
             else None,
             lite_helper=bool(s.get("lite_helper", True)),

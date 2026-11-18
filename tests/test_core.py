@@ -181,6 +181,23 @@ class MiscTests(unittest.TestCase):
             p.write_text(json.dumps({"backup_model": ""}))  # old install, no backup chosen: kept
             self.assertEqual(settings.load(p)["backup_model"], "")
 
+    def test_busy_choice_default_moves_to_backup_once(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "s.json")
+            self.assertEqual(settings.load(p)["model_problem_choice"], "backup")  # fresh install
+            # old install with the old "ask" default, even one that already ran the backup-model switch
+            p.write_text(json.dumps({"model_problem_choice": "ask", "backup_default_v2": True}))
+            s = settings.load(p)
+            self.assertEqual(s["model_problem_choice"], "backup")
+            s["model_problem_choice"] = "ask"  # chosen again afterwards: kept
+            settings.save(s, p)
+            self.assertEqual(settings.load(p)["model_problem_choice"], "ask")
+            p.write_text(json.dumps({"model_problem_choice": "wait"}))  # old install, own choice: kept
+            self.assertEqual(settings.load(p)["model_problem_choice"], "wait")
+            self.assertEqual(core.RunConfig.from_settings({**settings.DEFAULTS, "api_key": "k", "prompt": "p",
+                                                           "output_dir": d}).problem_choice, "backup")
+
     def test_settings_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d, "s.json")
