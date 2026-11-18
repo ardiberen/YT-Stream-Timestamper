@@ -138,7 +138,7 @@ def build_prompt(form: dict) -> str:
         fields.append("Approximate length (~X minutes)")
         row.append("Length: ~X minutes")
     if f["summary_on"]:
-        fields.append("One-line summary")
+        fields.append("One-line summary: just the topics, in a few words (see the rules below)")
         row.append("One-line summary")
     lines += [f"   - {x}" for x in fields]
 
@@ -163,6 +163,8 @@ def build_prompt(form: dict) -> str:
         lines.append("- A segment's length runs from when the person is introduced or joins until they leave; it "
                      "doesn't include the hosts' talk afterwards or run up to the next segment.")
     lines.append("- One continuous conversation with a person is one entry, even if the hosts talk in between.")
+    if f["summary_on"]:
+        lines.append("- " + SUMMARY_RULE)
     if f["chapters"]:
         lines.append(f'- The very first entry must be the line "00:00{sep}{intro}" exactly, even if nothing '
                      "qualifies until later. Every timestamp must be at least 10 seconds after the previous one.")
@@ -181,6 +183,13 @@ def build_prompt(form: dict) -> str:
 # For less capable models the app asks for the segments as data (start, end, name, ...) instead of finished text,
 # then does the arithmetic and layout itself (core.tidy_segments + render_segments below), so lengths are exact and
 # one call can't come out as several entries.
+
+# What the one-line summary should look like (normal prompt and the Flash-Lite helper's data prompt).
+SUMMARY_RULE = ('The one-line summary names only what the conversation covers, in a few words (about 3 to 8), '
+                'starting with a capital letter and with no period at the end, e.g. "Evolution, biology, and biblical '
+                'morality" or "Time, faith, and objective morality". Do not repeat the name or the stance/detail, and '
+                'don\'t write things like "A caller named...", "calls in to", "argues" or "debates the host".')
+
 
 def build_data_prompt(form: dict) -> str:
     f = normalize_form(form)
@@ -206,7 +215,7 @@ def build_data_prompt(form: dict) -> str:
         ex = f["detail_examples"].strip()
         lines.append(f"- detail: {label}" + (f" ({ex})" if ex else "") + ".")
     if f["summary_on"]:
-        lines.append("- summary: one short sentence on what happens in the segment.")
+        lines.append("- summary: " + SUMMARY_RULE)
     lines += [
         "",
         "Rules:",
@@ -249,7 +258,7 @@ def render_segments(form: dict, segments: list[dict]) -> str:
         if f["length_on"] and seg.get("end") is not None:
             row.append(f"Length: ~{max(1, round((seg['end'] - seg['start']) / 60))} minutes")
         if f["summary_on"] and seg.get("summary"):
-            row.append(seg["summary"])
+            row.append(seg["summary"].strip().rstrip("."))
         entries.append(sep.join(x.strip() for x in row))
     out = ""
     header = f["header"].strip()
