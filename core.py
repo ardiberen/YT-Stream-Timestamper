@@ -989,7 +989,7 @@ class Runner:
         self.discard = discard or threading.Event()  # set with Stop = delete the unfinished parts
 
     # ---- plumbing
-    def _interruptible(self, fn, *args, **kwargs):
+    def _interruptible(self, fn, *args, waiting: str = "", **kwargs):
         """Run a step that can't watch the Stop button itself (a Gemini answer, a YouTube page, loading the
         speech model...) so Stop works within a fraction of a second: the step is left to finish on its own
         in the background and its result is thrown away."""
@@ -1003,10 +1003,16 @@ class Runner:
 
         t = threading.Thread(target=work, daemon=True)
         t.start()
+        started = time.time()
+        shown = 0
         while t.is_alive():
             if self.stop.wait(0.2) and t.is_alive():
                 self._abandoned.append(t)
                 raise StopRequested()
+            took = int(time.time() - started)
+            if waiting and took >= shown + 5:  # a live clock, so a long wait doesn't look like a freeze
+                shown = took
+                self.status(f"{waiting}… {took // 60}:{took % 60:02d} (long streams can take a few minutes)")
         if "error" in box:
             raise box["error"]
         return box.get("value")
@@ -1396,7 +1402,8 @@ class Runner:
                 self.log(f"{model} {what}, and the backup model can't be used right now either.", "warn")
                 choice = "wait"
         if choice in ("model", "backup") and pick:
-            self.log(f"{model} {what}. Using {pick} instead.", "warn")
+            self.log(f"{model} {what}. Using {pick} instead: asking it now (a long stream can take a few "
+                     "minutes).", "warn")
             self._model = pick
             return
         if choice == "cancel":
@@ -1425,7 +1432,7 @@ class Runner:
             self._check_stop()
             try:
                 self._on_gemini("sent", self._model)
-                return self._interruptible(call, self._model)
+                return self._interruptible(call, self._model, waiting=f"Waiting for {self._model}'s answer")
             except Exception as e:  # noqa: BLE001
                 msg = str(e)
                 if is_tls_problem(e):
@@ -1495,6 +1502,12 @@ class Runner:
         if segs is None:
             self.log("The answer wasn't in the expected format; asking again the normal way ...", "warn")
             return self._ask_gemini(transcript)
+        if not is_lite_model(self._model):
+            # switched to a stronger model while busy: it doesn't need the extra checking request
+            self.log(f"  found {len(segs)} segment(s) (with {self._model}).")
+            for note in repair_hour_typos(segs, transcript.splitlines(), duration):
+                self.log(f"  fixed {note}.", "warn")
+            return pb.render_segments(c.form, tidy_segments(segs, c.min_segment_minutes, duration))
         self.log(f"  found {len(segs)} segment(s); asking the model to check its list against the transcript ...")
         draft = json.dumps({"segments": [{"start": fmt_ts(x["start"]),
                                           "end": fmt_ts(x["end"]) if x["end"] is not None else "",

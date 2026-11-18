@@ -1541,3 +1541,25 @@ class OverlapWarningTests(unittest.TestCase):
 
     def test_the_helper_never_moves_calls_because_of_an_overlap(self):
         self.assertFalse(hasattr(core, "repair_overlaps"))
+
+
+class BusySwitchTests(LiteHelperRunTests):
+    def test_switch_from_lite_skips_the_check_request_and_shows_progress(self):
+        statuses = []
+        r, sent = self.make_lite([RuntimeError("503 UNAVAILABLE. The model is overloaded.")] * 3
+                                 + [json.dumps(LiteHelperTests.LITE)], problem_choice="backup",
+                                 backup_model="gemini-3.8-flash")
+        r._sleep = lambda s: None
+        r.status = statuses.append
+        sm = r.run()
+        self.assertEqual(sm["done"], 1, self.logs)
+        self.assertEqual([m for m, _, _ in sent], ["gemini-3.5-flash-lite"] * 3 + ["gemini-3.8-flash"])  # no 2nd pass
+        self.assertTrue(any("asking it now" in m for _, m in self.logs))
+
+    def test_waiting_clock(self):
+        import time as _t
+        statuses = []
+        r = self.make("aaaaaaaaaaa")
+        r.status = statuses.append
+        self.assertEqual(r._interruptible(lambda: (_t.sleep(5.6), "ok")[1], waiting="Waiting for m's answer"), "ok")
+        self.assertTrue(any(x.startswith("Waiting for m's answer… 0:05") for x in statuses), statuses)
