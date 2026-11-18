@@ -781,86 +781,6 @@ def repair_hour_typos(segments: list[dict], lines: list[str], duration: Optional
     return notes
 
 
-def _anchored(seg: dict, lines: list[str]) -> bool:
-    """The person's name comes up right around the segment's start (from 2 minutes before to 5 after), so that
-    start time looks right and shouldn't be moved."""
-    return any(seg["start"] - 120 <= t <= seg["start"] + 300 for t in _name_mentions(lines, seg["name"]))
-
-
-def repair_overlaps(segments: list[dict], lines: list[str], min_minutes: float = 0,
-                    slack: int = 30) -> tuple[list[str], list[str]]:
-    """Two DIFFERENT people's segments can't overlap, so one of the times is off. Work out which one, using where
-    the names come up in the transcript, and fix only that one:
-      * a start where the person's name comes up nearby looks right and is never moved;
-      * a whole call given at the wrong hour is moved to the hour where the name comes up;
-      * a start that doesn't look right moves to where the name first comes up after the earlier call;
-      * if both starts look right, the earlier call's end ran too long: it ends where the next one starts.
-    A fix is never allowed to make a call shorter than the minimum length (it would vanish from the list); then,
-    and whenever it can't tell, it changes nothing and returns a warning. Changes segments in place.
-    Returns (fixes, warnings)."""
-    fixes, warnings = [], []
-    min_len = (min_minutes or 0) * 60
-    tried: set = set()
-    for _ in range(4 * len(segments) + 4):  # re-check after every fix: moving one call changes what overlaps
-        segs = sorted(segments, key=lambda x: x["start"])
-        pair = next(((a, b) for a, b in zip(segs, segs[1:])
-                     if a.get("end") is not None and b["start"] < a["end"] - slack
-                     and not (_name_key(a["name"]) and _name_key(a["name"]) == _name_key(b["name"]))
-                     and (id(a), id(b)) not in tried), None)
-        if pair is None:
-            break
-        a, b = pair
-        tried.add((id(a), id(b)))
-        who_a, who_b = a["name"] or "a segment", b["name"] or "the next segment"
-        a_ok, b_ok = _anchored(a, lines), _anchored(b, lines)
-        note = ""
-        if not b_ok:
-            note = _move_to_other_hour(b, segments, lines)
-        if not note and not a_ok:
-            note = _move_to_other_hour(a, segments, lines)
-        if not note and not b_ok:
-            found = [t for t in _name_mentions(lines, b["name"]) if a["end"] - 120 <= t <= b["start"] + 15 * 60
-                     and t > b["start"]]
-            if found and (b.get("end") is None or b["end"] - found[0] >= min_len):
-                note = (f"{who_b}: start {fmt_ts(b['start'])} -> {fmt_ts(found[0])} (it overlapped {who_a}; "
-                        f"{who_b} is first mentioned there)")
-                b["start"] = found[0]
-        if not note and a_ok and b_ok and b["start"] - a["start"] >= max(min_len, 60):
-            note = (f"{who_a}: end {fmt_ts(a['end'])} -> {fmt_ts(b['start'])} (it ran into {who_b}'s call, "
-                    "which starts there)")
-            a["end"] = b["start"]
-        if note:
-            fixes.append(note)
-            tried.clear()
-        else:
-            warnings.append(f"{who_a} (until {fmt_ts(a['end'])}) and {who_b} (from {fmt_ts(b['start'])}) "
-                            "overlap; one of those times is probably off")
-    return fixes, warnings
-
-
-def _move_to_other_hour(seg: dict, segs: list[dict], lines: list[str]) -> str:
-    """A whole segment given with the wrong hour (start AND end shifted, e.g. 02:27:44 for 00:27:44): try the same
-    minutes and seconds at each other hour, and move it where the person's name comes up within 5 minutes of the
-    start and the segment doesn't overlap anyone else. Returns a note, or "" if no hour fits."""
-    mentions = _name_mentions(lines, seg["name"])
-    if not mentions or seg.get("end") is None:
-        return ""
-    length = seg["end"] - seg["start"]
-    others = [x for x in segs if x is not seg and x.get("end") is not None]
-    for h in range(0, 24):
-        start = h * 3600 + seg["start"] % 3600
-        if start == seg["start"] or not any(abs(t - start) <= 300 for t in mentions):
-            continue
-        end = start + length
-        if any(start < x["end"] - 30 and x["start"] < end - 30 for x in others):
-            continue
-        note = (f"{seg['name']}: {fmt_ts(seg['start'])} -> {fmt_ts(start)} (overlapped another call; looked like "
-                f"a typo in the hour, and {seg['name']} is mentioned there)")
-        seg["start"], seg["end"] = start, end
-        return note
-    return ""
-
-
 def _name_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (name or "").lower())
 
@@ -1591,11 +1511,6 @@ class Runner:
             self.log(f"  after checking: {len(segs)} segment(s).")
         for note in repair_hour_typos(segs, transcript.splitlines(), duration):
             self.log(f"  fixed {note}.", "warn")
-        fixes, overlaps = repair_overlaps(segs, transcript.splitlines(), c.min_segment_minutes)
-        for note in fixes:
-            self.log(f"  fixed {note}.", "warn")
-        for note in overlaps:
-            self.log(f"Check before posting: {note}.", "warn")
         tidy = tidy_segments(segs, c.min_segment_minutes, duration)
         if len(tidy) != len(segs):
             self.log(f"  after merging split calls and applying the minimum length: {len(tidy)}.")
