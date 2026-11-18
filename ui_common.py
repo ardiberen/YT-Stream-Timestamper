@@ -12,17 +12,20 @@ from version import APP_VERSION
 
 APP_NAME = "Stream Timestamper"
 VERSION = APP_VERSION
-MODELS = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"]
-# One-line notes shown under the model box. Google changes free-tier limits often, so no exact numbers here.
+MODELS = ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite",
+          "gemini-3.1-flash-lite", "gemini-4-argon"]
+LITE_MARK = "lite"  # model names containing this get the Flash-Lite helper (see core.is_lite_model)
+# One-line notes shown under the model box. The free daily numbers are Google's free-tier limits when this
+# version was made; Google changes them now and then (Google AI Studio shows the current ones for your key).
 MODEL_NOTES = {
-    "gemini-3.6-flash": "Recommended. Fast and reliable, and works with free keys (free keys get a small number "
-                        "of requests per day).",
-    "gemini-3.8-flash": "Newest Flash model. Free keys have tight daily limits and may get errors; best with a "
-                        "paid key.",
-    "gemini-3.5-flash-lite": "Fastest, with the most free requests per day. A good backup when another model hits "
-                             "its daily limit, but it may miss more segments.",
-    "gemini-4-argon": "Paid keys only (doesn't work with free keys). Most capable, but slower and costs much more "
-                      "per stream.",
+    "gemini-4-hydrogen": "Recommended. The most accurate free model in testing (finds calls and their lengths "
+                         "best). Free keys: about 20 requests a day.",
+    "gemini-3.8-flash": "Very accurate; the recommended backup. Free keys: about 20 requests a day.",
+    "gemini-3.6-flash": "Good and fast. Free keys: about 20 requests a day.",
+    "gemini-3.5-flash-lite": "Many more free requests (about 500 a day) but less accurate; the app adds extra "
+                             "checks for it. Good for working through a backlog.",
+    "gemini-3.1-flash-lite": "About 500 free requests a day, less accurate; the app adds extra checks for it.",
+    "gemini-4-argon": "Paid keys only (doesn't work with free keys).",
 }
 
 
@@ -42,6 +45,7 @@ TEXT = ("#1f2328", "#e6e8eb")
 MUTED = ("#5b6472", "#8c95a3")
 ACCENT = ("#2f6fe0", "#3b82f6")
 ACCENT_HOVER = ("#2558b8", "#2f6fd6")
+GRIP = ("#b7c0cd", "#4a5260")  # the Run page's drag handle
 NAV_HOVER = ("#dbe1ea", "#20242c")
 NAV_SELECTED = ("#d3e2fb", "#23314a")
 NAV_SELECTED_TEXT = ("#1d4fb0", "#8fb8ff")
@@ -170,6 +174,144 @@ def help_toggle(parent, target) -> ctk.CTkButton:
                          hover_color=SECONDARY_HOVER, text_color=MUTED, font=font(12, "bold"), command=flip)
 
 
+WHEEL_STEP = 90  # logical px the page moves per mouse-wheel notch
+GLIDE_MS = 12  # time between glide frames
+GLIDE_SHARE = 0.4  # share of the remaining distance covered each frame
+
+
+class ScrollFrame(ctk.CTkScrollableFrame):
+    """CTkScrollableFrame with better mouse-wheel scrolling.
+
+    CustomTkinter's own handler moves about 20 px per wheel notch on Windows, redrawing in many tiny jumps, and
+    ignores the wheel completely while the pointer is over any text box. This one moves WHEEL_STEP per notch with
+    a short glide, and only lets a text box keep the wheel when it actually has more text to scroll.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._glide_target: float | None = None
+        self._glide_job = None
+        try:
+            self._parent_canvas.configure(yscrollincrement=1)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # CustomTkinter binds this name to the mouse wheel for the whole app (bind_all), so overriding it is enough.
+    def _mouse_wheel_all(self, event):
+        try:
+            self._on_wheel(event)
+        except Exception:  # noqa: BLE001  (a scroll problem must never break the app)
+            pass
+
+    def _wheel_is_mine(self, widget) -> bool:
+        w = widget
+        while w is not None and not isinstance(w, str):
+            if w is self or w is getattr(self, "_parent_canvas", None):
+                return True
+            if isinstance(w, (ctk.CTkScrollbar, ctk.CTkSlider)):
+                return False
+            if isinstance(w, ctk.CTkTextbox):
+                first, last = w.yview()
+                if first > 0.0 or last < 1.0:
+                    return False  # the text box has its own text to scroll
+            elif isinstance(w, ctk.CTkScrollableFrame):
+                return False  # another scrolling area inside this one
+            w = getattr(w, "master", None)
+        return False
+
+    def _on_wheel(self, event):
+        if getattr(self, "_shift_pressed", False) or not self._wheel_is_mine(event.widget):
+            return
+        canvas = self._parent_canvas
+        if tuple(canvas.yview()) == (0.0, 1.0):
+            return
+        if sys.platform.startswith("win"):
+            notches = -event.delta / 120
+        elif sys.platform == "darwin":
+            notches = -event.delta / 3
+        else:
+            notches = -1 if getattr(event, "num", 5) == 4 else 1
+        self.scroll_by(notches * WHEEL_STEP * window_scale(self))
+
+    def _content_height(self) -> float:
+        box = self._parent_canvas.bbox("all")
+        return float(box[3] - box[1]) if box else 0.0
+
+    def scroll_by(self, pixels: float) -> None:
+        canvas = self._parent_canvas
+        total = self._content_height()
+        room = total - canvas.winfo_height()
+        if total <= 0 or room <= 0:
+            return
+        start = self._glide_target if self._glide_target is not None else canvas.canvasy(0)
+        self._glide_target = max(0.0, min(room, start + pixels))
+        if self._glide_job is None:
+            self._glide()
+
+    def _glide(self):
+        self._glide_job = None
+        canvas = self._parent_canvas
+        target, total = self._glide_target, self._content_height()
+        if target is None or total <= 0:
+            self._glide_target = None
+            return
+        cur = canvas.canvasy(0)
+        left = target - cur
+        if abs(left) <= 1.5:
+            canvas.yview_moveto(target / total)
+            self._glide_target = None
+            return
+        step = left * GLIDE_SHARE
+        if abs(step) < 1:
+            step = 1 if left > 0 else -1
+        canvas.yview_moveto((cur + step) / total)
+        canvas.update_idletasks()  # paint everything at the new position together (avoids torn redraws)
+        self._glide_job = self.after(GLIDE_MS, self._glide)
+
+
+def ask_choice(parent, title: str, message: str, options: list[tuple[str, str, str]],
+               check: tuple | None = None, select: tuple | None = None) -> str | None:
+    """A small window with a message and one button per option [(key, label, kind)]. Returns the key clicked,
+    or None if it was closed. Blocks until answered, like a message box. check: optional (text, BooleanVar)
+    shown as a tick box above the buttons. select: optional (text, StringVar, values, hint) shown as a drop-down
+    row above the tick box."""
+    win = ctk.CTkToplevel(parent)
+    win.title(title)
+    win.configure(fg_color=CONTENT_BG)
+    win.resizable(False, False)
+    win.transient(parent)
+    answer: list = [None]
+    label(win, message, 14, wrap=460).pack(padx=24, pady=(22, 16), anchor="w")
+    if select:
+        sf = ctk.CTkFrame(win, fg_color="transparent")
+        sf.pack(padx=24, pady=(0, 12), anchor="w")
+        label(sf, select[0], 14).pack(side="left")
+        ctk.CTkOptionMenu(sf, values=list(select[2]), variable=select[1], width=110, height=32).pack(
+            side="left", padx=10)
+        if len(select) > 3 and select[3]:
+            hint(sf, select[3], wrap=300).pack(side="left")
+    if check:
+        ctk.CTkCheckBox(win, text=check[0], variable=check[1], font=font(14)).pack(padx=24, pady=(0, 16),
+                                                                                   anchor="w")
+    row = ctk.CTkFrame(win, fg_color="transparent")
+    row.pack(padx=24, pady=(0, 20), anchor="e")
+
+    def pick(key):
+        answer[0] = key
+        win.destroy()
+
+    for key, text, kind in options:
+        button(row, text, lambda k=key: pick(k), kind=kind).pack(side="left", padx=(8, 0))
+    win.protocol("WM_DELETE_WINDOW", win.destroy)
+    win.after(50, lambda: (win.lift(), win.focus_force()))
+    try:
+        win.grab_set()
+    except Exception:  # noqa: BLE001
+        pass
+    parent.wait_window(win)
+    return answer[0]
+
+
 def work_area(win) -> tuple[int, int, int, int]:
     """(left, top, width, height) in screen pixels of the usable desktop (without the taskbar)."""
     if sys.platform.startswith("win"):
@@ -222,6 +364,176 @@ def ago(days: float | None) -> str:
 
 
 # --------------------------------------------------------------------------- opening things
+
+
+# ---------------------------------------------------------------- clipboard
+# On Windows the app does all copying and pasting itself, through the Windows clipboard, and Tk's own clipboard
+# is never used. Tk 9's clipboard on Windows proved unreliable: inside the app it kept pasting text the app had
+# copied earlier even after a link was copied in the browser, it came back empty right after copying, and it
+# crashed when used from a window that wasn't shown yet. Elsewhere, Tk's clipboard is used as usual.
+CF_UNICODETEXT = 13
+GMEM_MOVEABLE = 0x0002
+
+
+def _win_clipboard_api():
+    import ctypes
+    from ctypes import wintypes
+
+    u = ctypes.WinDLL("user32", use_last_error=True)
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    u.OpenClipboard.argtypes, u.OpenClipboard.restype = [wintypes.HWND], wintypes.BOOL
+    u.CloseClipboard.argtypes, u.CloseClipboard.restype = [], wintypes.BOOL
+    u.EmptyClipboard.argtypes, u.EmptyClipboard.restype = [], wintypes.BOOL
+    u.IsClipboardFormatAvailable.argtypes, u.IsClipboardFormatAvailable.restype = [wintypes.UINT], wintypes.BOOL
+    u.GetClipboardData.argtypes, u.GetClipboardData.restype = [wintypes.UINT], wintypes.HANDLE
+    u.SetClipboardData.argtypes, u.SetClipboardData.restype = [wintypes.UINT, wintypes.HANDLE], wintypes.HANDLE
+    k.GlobalAlloc.argtypes, k.GlobalAlloc.restype = [wintypes.UINT, ctypes.c_size_t], wintypes.HGLOBAL
+    k.GlobalLock.argtypes, k.GlobalLock.restype = [wintypes.HGLOBAL], wintypes.LPVOID
+    k.GlobalUnlock.argtypes, k.GlobalUnlock.restype = [wintypes.HGLOBAL], wintypes.BOOL
+    k.GlobalFree.argtypes, k.GlobalFree.restype = [wintypes.HGLOBAL], wintypes.HGLOBAL
+    return ctypes, u, k
+
+
+def _win_open_clipboard(u) -> bool:
+    import time as _time
+
+    for _ in range(25):  # another program may have it open for a moment
+        if u.OpenClipboard(None):
+            return True
+        _time.sleep(0.02)
+    return False
+
+
+def _win_read() -> str | None:
+    """The clipboard's text, "" if it holds no text, None if the clipboard couldn't be opened."""
+    ctypes, u, k = _win_clipboard_api()
+    if not u.IsClipboardFormatAvailable(CF_UNICODETEXT):
+        return ""
+    if not _win_open_clipboard(u):
+        return None
+    try:
+        h = u.GetClipboardData(CF_UNICODETEXT)
+        ptr = k.GlobalLock(h) if h else None
+        if not ptr:
+            return ""
+        try:
+            return ctypes.wstring_at(ptr)
+        finally:
+            k.GlobalUnlock(h)
+    finally:
+        u.CloseClipboard()
+
+
+def _win_write(text: str) -> bool:
+    ctypes, u, k = _win_clipboard_api()
+    data = (text + "\0").encode("utf-16-le")
+    h = k.GlobalAlloc(GMEM_MOVEABLE, len(data))
+    if not h:
+        return False
+    ptr = k.GlobalLock(h)
+    if not ptr:
+        k.GlobalFree(h)
+        return False
+    ctypes.memmove(ptr, data, len(data))
+    k.GlobalUnlock(h)
+    if not _win_open_clipboard(u):
+        k.GlobalFree(h)
+        return False
+    try:
+        u.EmptyClipboard()
+        if u.SetClipboardData(CF_UNICODETEXT, h):
+            return True  # Windows owns the memory now
+    finally:
+        u.CloseClipboard()
+    k.GlobalFree(h)
+    return False
+
+
+def read_clipboard(widget) -> str:
+    """The text on the system clipboard right now."""
+    if sys.platform.startswith("win"):
+        try:
+            text = _win_read()
+            if text is not None:
+                return text
+        except Exception:  # noqa: BLE001
+            pass
+        return ""  # never fall back to Tk's clipboard on Windows (see above)
+    try:
+        return widget.clipboard_get()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def write_clipboard(widget, text: str) -> bool:
+    """Put text on the system clipboard. False if Windows wouldn't let the app (rare: another program held it)."""
+    if sys.platform.startswith("win"):
+        try:
+            return _win_write(text)
+        except Exception:  # noqa: BLE001
+            return False
+    widget.clipboard_clear()
+    widget.clipboard_append(text)
+    widget.update()
+    return True
+
+
+def _selected_text(w) -> str:
+    try:
+        if w.winfo_class() == "Text":
+            return w.get("sel.first", "sel.last")
+        return w.get()[w.index("sel.first"):w.index("sel.last")]
+    except Exception:  # noqa: BLE001  (nothing selected)
+        return ""
+
+
+def install_clipboard_fix(root) -> None:
+    """Copy, Cut and Paste in every text box and entry go through the Windows clipboard (Windows only)."""
+    if not sys.platform.startswith("win"):
+        return
+
+    def copy(event):
+        text = _selected_text(event.widget)
+        if text:
+            write_clipboard(root, text)
+        return "break"
+
+    def cut(event):
+        w = event.widget
+        text = _selected_text(w)
+        if text and write_clipboard(root, text):
+            try:
+                if str(w.cget("state")) != "disabled":
+                    w.delete("sel.first", "sel.last")
+            except Exception:  # noqa: BLE001
+                pass
+        return "break"
+
+    def paste(event):
+        w = event.widget
+        try:
+            if str(w.cget("state")) in ("disabled", "readonly"):
+                return "break"
+        except Exception:  # noqa: BLE001
+            pass
+        text = read_clipboard(root)
+        if not text:
+            return "break"
+        try:
+            w.delete("sel.first", "sel.last")
+        except Exception:  # noqa: BLE001  (nothing selected)
+            pass
+        w.insert("insert", text)
+        try:
+            w.see("insert")
+        except Exception:  # noqa: BLE001  (entries have no see())
+            pass
+        return "break"
+
+    for cls in ("Text", "Entry"):
+        root.bind_class(cls, "<<Copy>>", copy)
+        root.bind_class(cls, "<<Cut>>", cut)
+        root.bind_class(cls, "<<Paste>>", paste)
 
 
 def open_path(p: str) -> None:

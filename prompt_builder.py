@@ -159,6 +159,10 @@ def build_prompt(form: dict) -> str:
 
     lines += ["", "Rules:"]
     lines.append("- List entries in time order, earliest first.")
+    if f["length_on"]:
+        lines.append("- A segment's length runs from when the person is introduced or joins until they leave; it "
+                     "doesn't include the hosts' talk afterwards or run up to the next segment.")
+    lines.append("- One continuous conversation with a person is one entry, even if the hosts talk in between.")
     if f["chapters"]:
         lines.append(f'- The very first entry must be the line "00:00{sep}{intro}" exactly, even if nothing '
                      "qualifies until later. Every timestamp must be at least 10 seconds after the previous one.")
@@ -171,3 +175,87 @@ def build_prompt(form: dict) -> str:
         lines.append(f"- Output ONLY the formatted text{start}, with no other commentary.")
     lines.append("- If there are no qualifying segments, output only: No qualifying segments found.")
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------- the Flash-Lite helper's "data" prompt
+# For less capable models the app asks for the segments as data (start, end, name, ...) instead of finished text,
+# then does the arithmetic and layout itself (core.tidy_segments + render_segments below), so lengths are exact and
+# one call can't come out as several entries.
+
+def build_data_prompt(form: dict) -> str:
+    f = normalize_form(form)
+    show, desc = f["show"].strip(), f["description"].strip()
+    who = f'the YouTube channel "{show}"' if show else "a YouTube live stream"
+    lines = [f"You are an expert transcript analyzer for {who}" + (f" ({desc.rstrip('.')})." if desc else "."),
+             "Each transcript line is [HH:MM:SS] followed by what was said from that time on. Speakers are not "
+             "labeled, so work out who is talking from context.",
+             "",
+             f"Find EVERY segment where {f['find'].strip().rstrip('.')}."]
+    if f["ignore"].strip():
+        lines.append(f"IGNORE {f['ignore'].strip().rstrip('.')}.")
+    lines += [
+        "",
+        "For each segment return:",
+        "- start: when it begins (HH:MM:SS), i.e. when the person is introduced or joins.",
+        "- end: when it ends (HH:MM:SS), i.e. when that person leaves, hangs up or the conversation with them "
+        "clearly ends. Do NOT include the hosts' talk after they leave, and do not use the next segment's start.",
+        "- name: the person's name or handle as said in the stream (empty if never said).",
+    ]
+    if f["detail_on"]:
+        label = f["detail_label"].strip() or "Detail"
+        ex = f["detail_examples"].strip()
+        lines.append(f"- detail: {label}" + (f" ({ex})" if ex else "") + ".")
+    if f["summary_on"]:
+        lines.append("- summary: one short sentence on what happens in the segment.")
+    lines += [
+        "",
+        "Rules:",
+        "- One continuous conversation with a person is ONE segment, even if the hosts talk in between. Never "
+        "split one call or guest into several entries.",
+        "- Only list segments lasting at least {min_minutes} minutes." if _min(f) > 0 else
+        "- List segments of any length.",
+        "- Use timestamps that appear in the transcript, in time order.",
+        '- Answer only with JSON: {"segments": [...]} (an empty list if nothing qualifies).',
+    ]
+    return "\n".join(lines) + "\n"
+
+
+CHECK_PROMPT = ("You are checking a DRAFT list of segments that another assistant made from this transcript. Compare "
+                "it carefully with the transcript and return the corrected, complete list in the same JSON format: "
+                "fix start and end times (start = when the person is introduced or joins, end = when they leave), "
+                "merge entries that are really one continuous conversation, remove entries that don't match what "
+                "should be found, add any qualifying segments the draft missed, and correct names to how they're "
+                "said in the transcript.")
+
+
+def render_segments(form: dict, segments: list[dict]) -> str:
+    """Write tidied segments [{start, end, name, detail, summary}] (seconds) in the format chosen on the Prompt
+    page, the same layout build_prompt() asks the AI for."""
+    f = normalize_form(form)
+    sep = f" {f['separator']} "
+    gap = "\n\n" if f["blank_between"] else "\n"
+    if not segments:
+        return "No qualifying segments found.\n"
+    entries = []
+    if f["chapters"]:
+        entries.append(f"00:00{sep}{f['chapter_intro'].strip() or 'Intro'}")
+    for seg in segments:
+        t = int(seg["start"])
+        row = [f"{t // 3600:02d}:{t % 3600 // 60:02d}:{t % 60:02d}"]
+        if f["name_on"]:
+            row.append(seg.get("name") or "Unknown")
+        if f["detail_on"] and seg.get("detail"):
+            row.append(seg["detail"])
+        if f["length_on"] and seg.get("end") is not None:
+            row.append(f"Length: ~{max(1, round((seg['end'] - seg['start']) / 60))} minutes")
+        if f["summary_on"] and seg.get("summary"):
+            row.append(seg["summary"])
+        entries.append(sep.join(x.strip() for x in row))
+    out = ""
+    header = f["header"].strip()
+    if header:
+        out += header + "\n\n"
+    out += gap.join(entries) + "\n"
+    if f["trailing_period"]:
+        out += "\n\n.\n"
+    return out

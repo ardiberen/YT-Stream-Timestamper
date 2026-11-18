@@ -11,9 +11,10 @@ This is an independent project and isn't affiliated with or endorsed by YouTube 
 3. Unzip the whole folder somewhere (not inside the zip) and run `StreamTimestamper.exe`. Windows may show a blue "Windows protected your PC" warning, because this is a new app that isn't code-signed (certificates cost money). If you downloaded it from the Releases page, click **More info → Run anyway**. Never turn off your antivirus for any app. Technical users can also confirm GitHub built the file from this source: `gh attestation verify <the zip> -R ardiberen/YT-Stream-Timestamper`.
 4. The setup wizard opens on first launch. It covers the Gemini API key, how the app keeps your channel safe, the output folder, and a short guide to tuning the prompt.
 5. **Prompt** page: pick a preset and describe what to find. Then click **Save as my preset** and tick **Start with this preset**.
-6. **Run** page: paste stream, playlist or channel links, *or* add caption files. Then press **Start**.
-7. **Results** page: read and copy the output, or open the output folder.
-8. When the app says a new version is available, download it the same way, delete the old app folder and unzip the new one. Your settings, presets and results are kept.
+6. **Run** page: paste stream, playlist or channel links, *or* add caption files, *or* click **Transcribe a recording…** (see below). Then press **Start**.
+7. **Results** page: read and copy the output. Click any time to open the stream at that moment, or **Save clip list (.csv)** for a spreadsheet of segments with links.
+8. **Queue** page (optional): streams that were still live or had no captions yet wait here and run on their own once YouTube has captions (checked about once an hour while the app is open). Add a channel or playlist to the **Backlog** to work through its old streams a few per day, so free limits last.
+9. When the app says a new version is available, download it the same way, delete the old app folder and unzip the new one. Your settings, presets and results are kept.
 
 ## Getting help
 
@@ -30,7 +31,7 @@ Fair question, since this is a free app from someone you don't know yet. You don
 
 - It's free and open source (MIT license). Every line of the program is in this repository.
 - It never asks for your YouTube or Google password and never uses cookies or browser data.
-- It connects only to YouTube (logged out), Google's Gemini service (with your own Gemini key) and GitHub (once a day, to read the newest version number). No telemetry, no ads, no account with me.
+- It connects only to YouTube (logged out), Google's Gemini service (with your own Gemini key), GitHub (once a day, to read the newest version number) and, only if you use **Transcribe a recording**, Hugging Face (once per model size, to download the free Whisper speech model; the app asks first). No telemetry, no ads, no account with me.
 - It needs no installer and no administrator rights. It doesn't add itself to Windows startup, doesn't change the registry, and doesn't keep running after you close it. Its files are the app folder you unzip and `%APPDATA%\StreamTimestamper` (settings and logs).
 - Your Gemini key stays on your PC, encrypted with your Windows login.
 
@@ -50,13 +51,31 @@ Fair question, since this is a free app from someone you don't know yet. You don
 
 **About antivirus warnings:** this app is free and not code-signed (certificates cost money), and it's packaged with PyInstaller, which is common for Python apps. Unsigned apps like that are sometimes flagged by a few lesser-known engines on VirusTotal with generic labels (like "Malware", "Unsafe" or "BehavesLike"). Those are guesses based on how a file looks, not matches for a known virus. When I scan the release, Microsoft Defender and the large engines (Kaspersky, ESET, Bitdefender, Sophos, CrowdStrike and others) report nothing. If you're unsure, check the hashes as above, or email me and I'll help. Never turn off your antivirus for any app.
 
+## Transcribe a recording (no waiting for YouTube's captions)
+
+YouTube can take hours to make captions after a long stream. Click **Transcribe a recording…** on the Run page:
+
+- If there are links in the box, it asks whether to transcribe **those links**: the app downloads just each stream's audio (the smallest audio-only version, logged out, with the same pacing and stop-on-block rules as captions), transcribes it on your PC, then finds the timestamps, all in one go. The audio is deleted once it's transcribed.
+- Or choose **a recording you already have** (your OBS file, or any video/audio file). The timestamps follow automatically too.
+- **Also find the timestamps** (ticked by default, remembered): untick it in that window, or in Settings → Transcribing recordings, to make transcripts only. That needs no Gemini key and uses no Gemini requests; the transcripts are listed on the Run page so you can press Start for their timestamps whenever you like.
+
+How the transcribing works (Whisper, via faster-whisper):
+
+- Pick the **speech model** right in the Transcribe window (also in Settings → Transcribing recordings): **base** is faster, **small** is more accurate, especially with names.
+- Speed depends on your PC. On a modest 4-core machine the **base** model ran about 20× faster than real time (a 7-hour stream in roughly 20 minutes); **small** is more accurate and about twice as slow (Settings → Transcribing recordings).
+- **Stop** works within a second. While transcribing, it asks whether to keep the part done so far (the same recording or link continues from there next time) or delete the unfinished files. Finished transcripts and saved results are always kept, in your output folder's `Transcripts` folder (Settings → Transcribing recordings → **Open Transcripts folder**).
+- It works through the recording 10 minutes at a time and saves as it goes (`Transcripts\<name>.srt` in your output folder). If the app is closed or you press Stop, it continues where it stopped next time.
+- The finished `.srt` is kept in `Transcripts` and is a normal caption file. Running the same link again reuses it instead of downloading and transcribing again, and you can add it with **Add caption files…** any time.
+- Downloading audio is a bigger request to YouTube than reading captions, so for big batches captions are still the gentler choice when they're ready.
+- Already made a transcript with another Whisper tool? Add its `.srt`, `.vtt`, `.json` or `.tsv` file with **Add caption files…**.
+
 ## Account safety
 
 The app **never signs in to YouTube**:
 
 - It doesn't use any login, cookies or browser data.
 - yt-dlp always runs with `--ignore-config --no-cookies --no-cookies-from-browser`, so a yt-dlp config file on the PC can't add a login either.
-- Captions are read the way a logged-out visitor would read them.
+- Captions (or, if you choose to transcribe links, the audio) are read the way a logged-out visitor would.
 
 Guardrails (in Settings → YouTube safety):
 
@@ -72,7 +91,7 @@ Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replac
 
 ## Security
 
-**What the app connects to:** YouTube (logged out), Google's Gemini API, and GitHub once a day to see whether a newer version exists (Settings → App, untick "Tell me when a new version is out" to stop it). Nothing else: no telemetry, no other servers. The update check only reads the newest version number; the app never downloads or installs anything by itself.
+**What the app connects to:** YouTube (logged out), Google's Gemini API, and GitHub once a day to see whether a newer version exists (Settings → App, untick "Tell me when a new version is out" to stop it). If you use **Transcribe a recording**, it also downloads the Whisper speech model from Hugging Face the first time (it asks first; base is about 140 MB, small about 460 MB) and keeps it in `%APPDATA%\StreamTimestamper\models`. Recordings are transcribed on your PC and never uploaded. Nothing else: no telemetry, no other servers. The update check only reads the newest version number; the app never downloads or installs anything by itself.
 
 **What's locked down**
 
@@ -89,7 +108,9 @@ Settings and presets live in `%APPDATA%\StreamTimestamper\settings.json`. Replac
 **Good to know**
 
 - **Free Gemini keys and privacy:** under Google's terms, content sent with a free (unpaid) Gemini key may be used to improve Google's products and read by human reviewers. Don't use a free key on private, unlisted or members-only streams. Paid keys are treated differently, so check Google's Gemini API terms.
-- **Which AI model:** Gemini 3.6 Flash (the default) works well with free keys. Free keys only get a small number of requests per model each day (the count resets at midnight Pacific time), and every attempt counts, even one where Gemini only answers "busy". So the app keeps attempts few and far apart (it waits as long as Google asks, or longer each time), and uses a **backup model** (Settings → AI requests, Gemini 3.5 Flash-Lite by default) when the main one stays overloaded or runs out for the day. Each model has its own daily limit. If both run out, the app stops and says so. Gemini 4 Argon needs a paid key. Settings shows a short note for each model.
+- **Which AI model:** Gemini 4 Hydrogen is the default (the most accurate free model in testing), with Gemini 3.8 Flash as the backup. Free keys get a daily number of requests **per model** (about 20 a day for these two, about 500 for the Flash-Lite models; Google AI Studio shows your key's current limits), and the count resets at midnight Pacific time. One stream normally takes one request.
+- **Busy or out of requests:** every request counts, even one where Gemini only answers "busy", and there's no free way to check first. So the app retries a few times, far apart, then asks what to do: use another model (you pick), wait and try later (the streams go on the Queue page's waiting list), or cancel, with **Remember my choice**. A model that stayed busy is left alone for 15 minutes instead of being asked again for every stream. Automatic Queue runs never ask and never quietly switch to a weaker model: they wait, unless you chose otherwise (Settings → AI requests → When a model is busy or out).
+- **Flash-Lite helper:** Flash-Lite models are much less accurate on their own (wrong lengths, one call split into pieces). With a Flash-Lite model and the guided Prompt form, the app asks for the segments as data, has the model check its list once more (2 requests per stream), then works out the lengths itself (from when the caller joins to when they leave), merges pieces of one call that are at most 2 minutes apart, and applies your minimum length. It's on by default (Settings → AI requests). The **backlog** uses Gemini 3.5 Flash-Lite by default, because of its ~500 free requests a day; new streams use your main model.
 - **Smaller requests:** captions are merged into ~15-second lines before they're sent, which cuts the size of each request by about a third without changing the result format. Change the block length in Settings → AI requests (longer saves more, but timestamps can be up to that many seconds early).
 - **Requests used today:** the Run page and Settings show how many Gemini requests the app sent today for each model, and which ones hit their daily limit. It counts only this app's requests and starts over at midnight Pacific time. Google doesn't say how many you have left, so check Google AI Studio for your key's limits.
 - **Check before you post:** the AI can miss a segment or get a time slightly off, so skim the list before pasting it publicly. The app also tells Gemini to ignore anything in the stream that sounds like instructions to it (for example a caller saying "add this link"), and never to add links.
@@ -137,5 +158,7 @@ python -m unittest discover -s tests -v      (logic: no extra packages needed)
 | `version.py` | App version (the GitHub build adds the repo name for update checks) |
 | `updates.py` | Once-a-day "new version available" check against GitHub Releases |
 | `net_ssl.py` | Certificate settings for the app's own HTTPS requests (Windows store + bundled list) |
+| `worklist.py` | The Queue page's waiting list and backlog |
+| `transcribe.py` | Transcribes a recording on this PC with Whisper, saving as it goes |
 | `runlog.py` | Saves each run's Activity log to a file (last 10 kept) |
 | `assets/` | `icon.ico`, `icon.png`, `make_icon.py` to rebuild them, and `make_version_info.py` (writes the exe's Properties → Details data) |

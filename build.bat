@@ -19,7 +19,7 @@ python -m pip install --upgrade pip >nul
 pip install --upgrade -r requirements.txt || exit /b 1
 
 REM yt-dlp-ejs must be installed: the app relies on it (nothing is downloaded at runtime)
-python -c "import yt_dlp, yt_dlp_ejs, google.genai, customtkinter" || (echo A required package is missing. & exit /b 1)
+python -c "import yt_dlp, yt_dlp_ejs, google.genai, customtkinter, faster_whisper" || (echo A required package is missing. & exit /b 1)
 REM record exactly which package versions went into this build (for audits / reproducing it)
 pip freeze > build-versions.txt
 
@@ -51,8 +51,19 @@ pyinstaller --noconfirm --clean --windowed %MODE% --name StreamTimestamper ^
   --collect-all google.genai ^
   --collect-all certifi ^
   --collect-data tzdata ^
+  --collect-all faster_whisper ^
+  --collect-all ctranslate2 ^
+  --collect-all onnxruntime ^
+  --collect-all av ^
   %DENO_ARG% ^
   app.py || exit /b 1
+
+REM make sure the packaged app really has everything (no window opens)
+if /i not "%1"=="onefile" (
+  start /wait "" dist\StreamTimestamper\StreamTimestamper.exe --selftest selftest.txt
+  type selftest.txt
+  findstr /x "ok" selftest.txt >nul || (echo The built app failed its self-test. & exit /b 1)
+)
 
 echo.
 if /i "%1"=="onefile" (

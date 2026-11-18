@@ -67,7 +67,7 @@ print("1. first launch")
 a = appmod.App()
 import ui_common as ui
 check(os.path.exists(ui.ICON_ICO) and ui.icon_image(44) is not None, "icon files found and sidebar image loads")
-check("no login used" in a.side_safe.kw["text"], "sidebar shows no-login status")
+check(not hasattr(a, "side_safe"), "no 'YouTube: no login used' line in the sidebar")
 pump(lambda: a.wizard is not None)
 w = a.wizard
 check(w is not None and w._key() == "welcome", "wizard opens at Welcome")
@@ -90,14 +90,14 @@ check(pump(lambda: a.s["last_update_check"] > 0), "startup update check ran (up 
 check(not a.banner.gridded, "no update banner when up to date")
 
 print("1b. model notes")
-check(a.s["model"] == "gemini-3.6-flash", "default model is 3.6 Flash")
+check(a.s["model"] == "gemini-4-hydrogen", "default model is Gemini 4 Hydrogen")
 notes = [l for l in a._model_notes if l.winfo_exists()]
 check(notes and "Recommended" in notes[0].kw["text"], "model note under the model box")
 a.v_model.set("gemini-4-argon")
 check("Paid keys only" in notes[0].kw["text"], "note follows the chosen model")
 a.v_model.set("my-custom-model")
 check("Custom model" in notes[0].kw["text"], "custom model name gets a generic note")
-a.v_model.set("gemini-3.6-flash")
+a.v_model.set("gemini-4-hydrogen")
 
 print("2. prompt chapters option")
 a.fv["chapters"].set(True)
@@ -114,12 +114,24 @@ check("1 saved" in a.status_lbl.kw["text"], "link run saved 1: " + a.status_lbl.
 check(FETCHED, "YouTube was queried for the link")
 
 print("3b. layout and logs")
-sp = a.run_split
-sp.binds["<Configure>"]()
-check(sp.sash[0] == 300 + 14, "divider starts just below the links card")
-sp.sash_place(0, 0, 240)
-sp.binds["<ButtonRelease-1>"]()
-check(a.s["run_split"] == 0.4, "dragged divider position remembered")
+from types import SimpleNamespace as _Ev
+a._on_split_configure()
+check(a._split_y() == 300 + 4, "handle starts just below the links card")
+a._split_press(_Ev(y_root=500))
+a._split_drag(_Ev(y_root=436))
+check(a._split_y() == 240, "dragging the handle resizes the links area")
+a._on_split_moved()
+check(a.s["run_split"] == 0.4, "dragged handle position remembered")
+a._split_drag(_Ev(y_root=-5000))
+check(a._split_y() == 64, "can't drag the links area smaller than its minimum")
+a._split_drag(_Ev(y_root=5000))
+check(a._split_y() == 600 - 226, "can't squeeze the Activity area below its minimum")
+a._split_toggle()
+check(a._split_y() == 64, "double-click shrinks the links area")
+a._split_toggle()
+check(a._split_y() == 600 - 226, "double-click again brings it back")
+a._place_split(240)
+a._on_split_moved()
 import runlog
 logs = sorted(runlog.log_dir().glob("run-*.txt"))
 check(len(logs) == 1 and "1 saved" in logs[0].read_text(encoding="utf-8"), "run log file written")
@@ -177,7 +189,7 @@ print("6. caption-files-only mode")
 a.v_files_only.set(True)
 a._refresh_files_only()
 check(a.urls_box.kw.get("state") == "disabled", "links box disabled")
-check("never contacted" in a.side_safe.kw["text"], "sidebar says never contacted")
+check(a.links_off_lbl.gridded, "Run page says links are turned off")
 messagebox.CALLS.clear()
 a.start()
 check(messagebox.CALLS and "caption file" in messagebox.CALLS[-1][1], "asks for a caption file instead")
@@ -193,7 +205,7 @@ a.v_max_run.set("15")
 
 print("7b. tidier pages and the request counter")
 check("requests today" in a.usage_lbl.kw["text"], "Run page shows today's Gemini requests: " + a.usage_lbl.kw["text"])
-check(a.s["gemini_usage"]["counts"].get("gemini-3.6-flash", 0) >= 3, "runs and key tests were counted")
+check(a.s["gemini_usage"]["counts"].get("gemini-4-hydrogen", 0) >= 3, "runs and key tests were counted")
 check(not a.preview_box.master.gridded, "AI instructions preview starts folded")
 a._apply_state(a.get_form(), True, "hand edited")
 check(a.preview_box.master.gridded, "advanced (hand-edited) prompt opens the preview")
@@ -202,6 +214,129 @@ a.v_merge.set("90")
 a.collect()
 check(a.s["merge_seconds"] == 60, "merge block length capped at 60 s")
 a.v_merge.set("15")
+
+print("7c. results: clickable times and clip list")
+import ui_common
+opened = []
+ui_common.open_url = opened.append
+res = [p for p in a._result_paths if p.endswith("[WbPksTZLcRA].txt")] if a._result_paths else []
+a.show_page("results")
+res = [p for p in a._result_paths if p.endswith("[WbPksTZLcRA].txt")]
+check(res, "YouTube result is listed")
+a.select_result(res[0])
+vb = a.view_box
+check(vb.tags.get("ts_link") == [("3.0", "3.8")], "the start time on the result line is a link: %r" % vb.tags.get("ts_link"))
+vb.tag_binds[("ts0", "<Button-1>")](None)
+check(opened == ["https://www.youtube.com/watch?v=WbPksTZLcRA&t=5s"], "clicking it opens the stream at that moment")
+messagebox.ANSWERS["askyesno"] = False
+a.save_clip_list()
+csvs = list(Path(a.s["output_dir"]).glob("*clips.csv"))
+check(len(csvs) == 1 and "t=5s" in csvs[0].read_text(encoding="utf-8-sig"), "clip list saved with links")
+messagebox.ANSWERS["askyesno"] = True
+
+print("7d. queue page and automatic runs")
+import worklist
+a.show_page("queue")
+check("YouTube limited" in a.queue_status.kw["text"], "queue pauses after a YouTube block")
+a.s["last_blocked"] = 0
+a.refresh_queue()
+check("On:" in a.queue_status.kw["text"], "queue page says automatic runs are on: " + a.queue_status.kw["text"])
+worklist.add_waiting(a.s, "ccccccccccc", "Still live stream", time.time() - 7200)
+worklist.check_all_now(a.s)
+FETCHED.clear()
+check(a._maybe_auto_run() is True, "a due waiting stream starts an automatic run")
+pump(lambda: a.btn_start.kw.get("state") == "normal", timeout=10)
+check(FETCHED and "ccccccccccc" in FETCHED[0], "the automatic run fetched the waiting stream")
+check(worklist.waiting(a.s) == [], "done streams leave the waiting list")
+check("Automatic run" in a.status_lbl.kw["text"], "status says it was automatic: " + a.status_lbl.kw["text"])
+check(a._maybe_auto_run() is False, "nothing more to do: no run")
+a.v_auto.set(False)
+worklist.add_waiting(a.s, "ddddddddddd", "x", time.time() - 7200)
+worklist.check_all_now(a.s)
+check(a._maybe_auto_run() is False, "switched off: no automatic run")
+a.v_auto.set(True)
+a.s["waiting"] = []
+
+print("7e. transcribe button without Whisper installed")
+import transcribe as _tr
+if not _tr.available():
+    messagebox.CALLS.clear()
+    a.transcribe_recording()
+    check(messagebox.CALLS and "isn't included" in messagebox.CALLS[-1][1], "explains when Whisper isn't in this copy")
+
+print("7f. transcribe prompt and its tick box")
+asked = []
+a._ask_choice = lambda title, msg, options, check=None, select=None: asked.append((msg, [k for k, _, _ in options], check, select)) or "cancel"
+a.urls_box.buf = ""
+a.transcribe_recording() if _tr.available() else None
+a.urls_box.buf = "https://youtu.be/aaaaaaaaaaa"
+if _tr.available():
+    a.transcribe_recording()
+    check(asked[-1][1] == ["links", "file", "cancel"], "links in the box: offers them, a file, or cancel")
+    check(asked[0][1] == ["file", "cancel"], "no links: choose a file or cancel")
+    check(asked[-1][2][1] is a.v_then_ts and a.v_then_ts.get(), "'also find the timestamps' is ticked by default")
+    check(asked[-1][3][1] is a.v_whisper and asked[-1][3][2] == ["base", "small"], "base/small picker in the window")
+check(a.s.get("transcribe_then_timestamps", True) is True, "setting defaults to doing everything in one go")
+a.v_then_ts.set(False)
+a.collect()
+check(a.s["transcribe_then_timestamps"] is False, "unticking it is remembered")
+a.v_then_ts.set(True)
+a.urls_box.buf = ""
+
+print("7g. a busy model: ask, use another, remember")
+_gen = core.generate
+used = []
+def busy_gen(key, model, system, transcript):
+    used.append(model)
+    if model == a.s["model"]:
+        raise RuntimeError("503 UNAVAILABLE. The model is overloaded.")
+    return "Timestamps:\n\n00:00:05 – Caller – Length: ~5 minutes\n"
+core.generate = busy_gen
+asked = []
+def answer(title, msg, options, check=None, select=None):
+    asked.append((msg, [k for k, _, _ in options], select[2] if select else None))
+    check[1].set(True)  # remember
+    return "model"
+a._ask_choice = answer
+a.s["model_cooloff"] = {}
+a.v_problem.set(appmod.PROBLEM_CHOICES["ask"])
+a.v_max_retries = None
+a.urls_box.buf = "https://youtu.be/eeeeeeeeeee"
+FETCHED.clear()
+a.v_skip.set(False)
+a.start()
+pump(lambda: a.btn_start.kw.get("state") == "normal", timeout=15)
+check(asked and "busy right now" in asked[0][0], "asked what to do when the model stays busy")
+check(asked[0][1] == ["model", "wait", "cancel"], "offers another model, wait, or cancel")
+check(a.s["model"] not in (asked[0][2] or []), "the busy model isn't offered as the alternative")
+check(used[-1] == a.s["backup_model"], "the run carried on with the chosen model: " + used[-1])
+check(a.s["model_problem_choice"] == "backup", "the choice was remembered")
+check(a.s["model_cooloff"].get(a.s["model"], 0) > time.time(), "the busy model cools off for a while")
+asked.clear(); used.clear()
+a.start()
+pump(lambda: a.btn_start.kw.get("state") == "normal", timeout=15)
+check(not asked and used == [a.s["backup_model"]], "next run: no question, and no request to the cooling model")
+a.s["model_problem_choice"] = "ask"; a.v_problem.set(appmod.PROBLEM_CHOICES["ask"]); a.s["model_cooloff"] = {}
+core.generate = _gen
+a.v_skip.set(True)
+a.urls_box.buf = ""
+
+print("7h. backlog runs on its own model")
+seen = []
+core.generate = lambda key, model, system, transcript: seen.append(model) or "Timestamps:\n\n00:00:05 – A\n"
+_gj = core.generate_json
+core.generate_json = lambda key, model, system, contents, thinking=True: seen.append(model + " (data)") or \
+    '{"segments": [{"start": "00:05:00", "end": "00:20:00", "name": "Ann", "detail": "", "summary": ""}]}'
+a.s["last_blocked"] = 0
+worklist.add_backlog(a.s, "https://www.youtube.com/@x/streams", "@x", [("fffffffffff", "Old one")])
+check(a._maybe_auto_run() is True, "an automatic backlog run starts")
+pump(lambda: a.btn_start.kw.get("state") == "normal", timeout=10)
+check(seen == ["gemini-3.5-flash-lite (data)"] * 2, "the backlog used the backlog model, with the Lite helper's "
+      "2 requests: %r" % seen)
+core.generate_json = _gj
+check(worklist.backlog(a.s)[0]["done"] == 1, "the backlog counts it as done")
+a.s["backlog"] = []
+core.generate = _gen
 
 print("8. relaunch")
 a._on_close()

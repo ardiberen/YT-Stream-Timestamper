@@ -9,7 +9,9 @@ public issue, and never include API keys, passwords or personal details.
 ## What this app does and doesn't do
 
 - It never asks for or uses a YouTube/Google login, cookies or browser data.
-- It connects only to YouTube (logged out) and Google's Gemini API, using the user's own Gemini key.
+- It connects only to YouTube (logged out) and Google's Gemini API, using the user's own Gemini key. If the user
+  chooses to transcribe a recording, it downloads the Whisper speech model from Hugging Face once (after asking);
+  recordings are transcribed locally and never uploaded.
 - The Gemini key is stored encrypted with Windows DPAPI when Windows allows it.
 - Each run's activity log is saved only on the user's PC (last 10 runs), with the API key removed.
 - There is no telemetry. Once a day it asks GitHub for the newest version number and shows a link if there's

@@ -17,6 +17,7 @@ import settings  # noqa: E402
 import updates  # noqa: E402
 import prompt_builder as pb  # noqa: E402
 import usage  # noqa: E402
+import worklist  # noqa: E402
 import version  # noqa: E402
 
 
@@ -178,7 +179,7 @@ class MiscTests(unittest.TestCase):
             self.assertNotIn("unknown_key", s2)
             p.write_text("{not json")
             s3 = settings.load(p)
-            self.assertEqual(s3["model"], "gemini-3.6-flash")
+            self.assertEqual(s3["model"], "gemini-4-hydrogen")
             self.assertTrue(p.with_suffix(".bad").exists())
 
 
@@ -227,7 +228,11 @@ class FakeRunTests(unittest.TestCase):
                 "https://www.youtube.com/@Chan\naaaaaaaaaaa\n")
         r = self.make(urls)
         sm = r.run()
-        self.assertEqual((sm["done"], sm["skipped"], sm["failed"]), (1, 2, 1), self.logs)
+        self.assertEqual((sm["done"], sm["skipped"], sm["failed"], sm["waiting"]), (1, 1, 0, 2), self.logs)
+        # still live / no captions yet -> waiting list, with titles, and an outcome for every video
+        self.assertEqual(sm["waiting_list"], [("ccccccccccc", "Live now"), ("ddddddddddd", "No caps")])
+        self.assertEqual(sm["outcomes"], {"aaaaaaaaaaa": "done", "bbbbbbbbbbb": "skipped",
+                                          "ccccccccccc": "waiting", "ddddddddddd": "waiting"})
         out = Path(self.tmp.name, "Long stream [aaaaaaaaaaa].txt")
         self.assertTrue(out.exists())
         self.assertIn("00:00:05", out.read_text())
@@ -864,10 +869,11 @@ class GeminiDailyLimitTests(FakeRunTests):
             calls.append(1)
             raise RuntimeError(self.DAY)
         core.generate = gen
-        sm = self.make("aaaaaaaaaaa\nhttps://youtu.be/aaaaaaaaaaa").run()
-        self.assertEqual(len(calls), 1)  # no retries, no second stream
-        self.assertIn("daily limit for m", sm["error"])
-        self.assertIn("midnight Pacific", sm["error"])
+        sm = self.make("aaaaaaaaaaa\nbbbbbbbbbbb", min_stream_minutes=5).run()
+        self.assertEqual(len(calls), 1)  # no retries, nothing sent for the second stream
+        self.assertEqual((sm["gemini_wait"], sm["waiting"]), ("out", 2))  # both wait for later, nothing failed
+        self.assertEqual([v for v, _ in sm["waiting_list"]], ["aaaaaaaaaaa", "bbbbbbbbbbb"])
+        self.assertTrue(any("midnight Pacific" in m for _, m in self.logs))
 
     def test_minute_and_day_listed_waits_once_then_continues(self):
         calls = []
@@ -891,7 +897,7 @@ class GeminiDailyLimitTests(FakeRunTests):
         core.generate = gen
         sm = self.make("aaaaaaaaaaa").run()
         self.assertEqual(len(calls), 2)
-        self.assertIn("daily limit", sm["error"])
+        self.assertEqual(sm["gemini_wait"], "out")
 
     def test_per_minute_still_retried(self):
         calls = []
@@ -927,7 +933,7 @@ class GeminiDailyLimitTests(FakeRunTests):
         core.generate = gen
         sm = self.make("aaaaaaaaaaa", backup_model="lite").run()
         self.assertEqual(calls, ["m", "lite"])
-        self.assertIn("daily limit for lite", sm["error"])
+        self.assertEqual((sm["gemini_wait"], sm["gemini_wait_model"]), ("out", "lite"))
 
     def test_key_test_message(self):
         orig = core.generate
@@ -1040,20 +1046,23 @@ if __name__ == "__main__":
 
 
 class GeminiRetryTests(FakeRunTests):
-    def test_overloaded_twice_tries_backup_once_then_main_again(self):
+    def test_busy_for_every_try_then_backup_and_cooloff(self):
         models, waits = [], []
 
         def gen(key, model, system, transcript):
             models.append(model)
-            if model == "m" and len(models) <= 2:
+            if model == "m":
                 raise RuntimeError("503 UNAVAILABLE. The model is overloaded.")
             return "ok text"
         core.generate = gen
-        r = self.make("aaaaaaaaaaa\nbbbbbbbbbbb", backup_model="lite", min_stream_minutes=5)
+        cool = {}
+        r = self.make("aaaaaaaaaaa\nbbbbbbbbbbb", backup_model="lite", min_stream_minutes=5, cooloff=cool)
         r._sleep = waits.append
         sm = r.run()
         self.assertEqual(sm["done"], 2)
-        self.assertEqual(models, ["m", "m", "lite", "m"])  # backup only for that stream
+        # 3 tries on the busy model, then the backup; the busy model isn't asked again for the next stream
+        self.assertEqual(models, ["m", "m", "m", "lite", "lite"])
+        self.assertGreater(cool["m"], __import__("time").time() + 14 * 60)
 
     def test_no_backup_gives_up_after_max_retries(self):
         calls = []
@@ -1065,7 +1074,7 @@ class GeminiRetryTests(FakeRunTests):
         r = self.make("aaaaaaaaaaa", max_retries=3)
         r._sleep = lambda s: None
         sm = r.run()
-        self.assertEqual((len(calls), sm["failed"]), (3, 1))
+        self.assertEqual((len(calls), sm["failed"], sm["waiting"], sm["gemini_wait"]), (3, 0, 1, "busy"))
 
     def test_uses_googles_retry_delay(self):
         waits = []
@@ -1169,3 +1178,388 @@ class UsageTests(unittest.TestCase):
         finally:
             core.generate = orig
         self.assertEqual(events, [("sent", "m"), ("out", "m"), ("sent", "lite"), ("out", "lite")])
+
+
+class ResultToolsTests(unittest.TestCase):
+    TEXT = ("Timestamps:\n\n00:00 – Intro\n\n00:12:05 – Bob – Christian – Length: ~6 minutes\n\n"
+            "00:20:00 – Ann – Muslim\n\n1:05:09 – Cal\n")
+
+    def test_entries_and_seconds(self):
+        self.assertEqual([s for s, _ in core.result_entries(self.TEXT)], [0, 725, 1200, 3909])
+        self.assertEqual(core.ts_seconds("1:05:09"), 3909)
+        self.assertEqual(core.ts_seconds("05:09"), 309)
+
+    def test_checks(self):
+        self.assertEqual(core.check_result(self.TEXT, 7200), [])
+        bad = "00:00 – Intro\n00:10:00 – A\n00:09:00 – B\n00:09:05 – C\n"
+        w = core.check_result(bad, 300)
+        self.assertTrue(any("out of order" in x for x in w))
+        self.assertTrue(any("10 seconds" in x for x in w))
+        self.assertTrue(any("past the end" in x for x in w))
+        self.assertTrue(any("fewer than 3" in x for x in core.check_result("00:00 – Intro\n01:00 – A\n")))
+        self.assertTrue(any("characters" in x for x in core.check_result("00:00 x\n" + "y" * 5001)))
+        self.assertEqual(core.check_result("No qualifying segments found."), [])
+
+    def test_clip_rows_and_csv(self):
+        rows = core.clip_rows(self.TEXT, "abcdefghijk", 4000)
+        self.assertEqual([(r["start"], r["end"]) for r in rows],
+                         [("00:12:05", "00:18:05"), ("00:20:00", "01:05:09"), ("01:05:09", "01:06:40")])
+        self.assertEqual(rows[0]["link"], "https://www.youtube.com/watch?v=abcdefghijk&t=725s")
+        self.assertEqual(core.clip_rows(self.TEXT)[0]["link"], "")
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "c.csv")
+            core.write_clip_csv(p, [{"start": "00:00:01", "end": "", "minutes": "", "description": "=HYPERLINK(1)",
+                                     "link": ""}])
+            text = p.read_text(encoding="utf-8-sig")
+        self.assertIn("'=HYPERLINK(1)", text)  # never runs as a formula in Excel
+        self.assertTrue(text.startswith("start,end,minutes,description,link"))
+
+    def test_video_id_from_result_name(self):
+        self.assertEqual(core.video_id_from_result("C:/x/My Stream [abcdefghijk].txt"), "abcdefghijk")
+        self.assertEqual(core.video_id_from_result("My Stream.txt"), "")
+
+    def test_whisper_formats(self):
+        self.assertEqual(core.parse_caption_text('{"segments": [{"start": 61.2, "text": " hi"}]}', ".json"),
+                         ["[00:01:01] hi"])
+        self.assertEqual(core.parse_caption_text("start\tend\ttext\n62000\t63000\tworld\n", ".tsv"),
+                         ["[00:01:02] world"])
+        self.assertEqual(core.parse_caption_text("not json {", ".json"), [])
+
+
+class WorklistTests(unittest.TestCase):
+    T0 = 1_800_000_000.0  # a fixed moment
+
+    def test_waiting_is_checked_hourly_and_dropped_after_two_days(self):
+        s = {}
+        self.assertTrue(worklist.add_waiting(s, "aaaaaaaaaaa", "Stream A", self.T0))
+        self.assertFalse(worklist.add_waiting(s, "aaaaaaaaaaa", "", self.T0))  # no duplicates
+        self.assertEqual(worklist.due_waiting(s, self.T0 + 60), [])
+        self.assertEqual(worklist.due_waiting(s, self.T0 + 3600), ["aaaaaaaaaaa"])
+        worklist.check_all_now(s)
+        self.assertEqual(worklist.due_waiting(s, self.T0), ["aaaaaaaaaaa"])
+        self.assertEqual(worklist.expire_waiting(s, self.T0 + 47 * 3600), [])
+        self.assertEqual(len(worklist.expire_waiting(s, self.T0 + 49 * 3600)), 1)
+        self.assertEqual(worklist.waiting(s), [])
+
+    def test_backlog_per_day_and_waiting_first(self):
+        s = {"backlog_per_day": 2}
+        vids = [(c * 11, f"Old {c}") for c in "bcdef"]
+        self.assertEqual(worklist.add_backlog(s, "https://www.youtube.com/@x/streams", "@x", vids,
+                                              skip_ids=["ccccccccccc"], now=self.T0), 4)
+        worklist.add_waiting(s, "aaaaaaaaaaa", "New", self.T0 - 7200)
+        plan = worklist.plan_auto_run(s, 20, self.T0)
+        self.assertEqual(plan, ["aaaaaaaaaaa", "bbbbbbbbbbb", "ddddddddddd"])  # new stream first, then 2 old
+        worklist.apply_outcomes(s, {"aaaaaaaaaaa": "done", "bbbbbbbbbbb": "done", "ddddddddddd": "failed"},
+                                now=self.T0)
+        self.assertEqual(worklist.waiting(s), [])
+        b = worklist.backlog(s)[0]
+        self.assertEqual((b["done"], b["failed"], len(b["pending"])), (1, 1, 2))
+        self.assertEqual(worklist.plan_auto_run(s, 20, self.T0 + 60), [])  # today's 2 are used up
+        tomorrow = self.T0 + 24 * 3600
+        self.assertEqual(worklist.plan_auto_run(s, 20, tomorrow), ["eeeeeeeeeee", "fffffffffff"])
+
+    def test_still_waiting_and_daily_limit_pause(self):
+        s = {}
+        worklist.add_waiting(s, "aaaaaaaaaaa", "A", self.T0)
+        worklist.apply_outcomes(s, {"aaaaaaaaaaa": "waiting", "zzzzzzzzzzz": "waiting"},
+                                {"zzzzzzzzzzz": "Live now"}, now=self.T0 + 3600)
+        self.assertEqual([w["id"] for w in worklist.waiting(s)], ["aaaaaaaaaaa", "zzzzzzzzzzz"])
+        self.assertEqual(worklist.waiting(s)[1]["title"], "Live now")
+        worklist.check_all_now(s)
+        worklist.pause_today(s, self.T0)
+        self.assertEqual(worklist.plan_auto_run(s, 20, self.T0), [])
+        self.assertTrue(worklist.plan_auto_run(s, 20, self.T0 + 24 * 3600))
+
+    def test_old_backlog_stream_without_captions_is_not_retried_forever(self):
+        s = {}
+        worklist.add_backlog(s, "u", "u", [("bbbbbbbbbbb", "Old")], now=self.T0)
+        worklist.apply_outcomes(s, {"bbbbbbbbbbb": "waiting"}, now=self.T0)
+        self.assertEqual(worklist.waiting(s), [])
+        self.assertEqual(worklist.backlog(s)[0]["failed"], 1)
+
+    def test_run_cap_respected(self):
+        s = {"backlog_per_day": 50}
+        worklist.add_backlog(s, "u", "u", [(f"{i:011d}", "") for i in range(30)], now=self.T0)
+        self.assertEqual(len(worklist.plan_auto_run(s, 20, self.T0)), 20)
+
+
+class StopTests(FakeRunTests):
+    def test_stop_during_a_slow_gemini_answer_is_quick(self):
+        import time as _t
+        release = threading.Event()
+
+        def slow(*a):
+            release.wait(30)  # a Gemini answer that takes ages
+            return "late"
+        core.generate = slow
+        r = self.make("aaaaaaaaaaa")
+        threading.Timer(0.5, r.stop.set).start()
+        t0 = _t.time()
+        sm = r.run()
+        release.set()
+        self.assertTrue(sm["stopped"])
+        self.assertLess(_t.time() - t0, 3)
+        self.assertEqual(sm["saved"], [])
+
+    def test_stop_during_a_slow_youtube_page_is_quick(self):
+        import time as _t
+        release = threading.Event()
+        r = self.make("aaaaaaaaaaa")
+        r._fetch_info = lambda url: release.wait(30) or {}
+        threading.Timer(0.5, r.stop.set).start()
+        t0 = _t.time()
+        self.assertTrue(r.run()["stopped"])
+        release.set()
+        self.assertLess(_t.time() - t0, 3)
+
+
+class ModelProblemTests(FakeRunTests):
+    BUSY = "503 UNAVAILABLE. The model is overloaded."
+
+    def busy_main(self):
+        calls = []
+
+        def gen(key, model, system, transcript):
+            calls.append(model)
+            if model == "m":
+                raise RuntimeError(self.BUSY)
+            return "ok text"
+        core.generate = gen
+        return calls
+
+    def test_ask_and_pick_another_model(self):
+        calls = self.busy_main()
+        asked = []
+        r = self.make("aaaaaaaaaaa", problem_choice="ask", backup_model="b2", model_choices=("m", "b2", "b3"))
+        r._ask_problem = lambda kind, model, options: asked.append((kind, model, options)) or ("model", "b3")
+        sm = r.run()
+        self.assertEqual(sm["done"], 1)
+        self.assertEqual(asked, [("busy", "m", ["b2", "b3"])])  # the busy model isn't offered
+        self.assertEqual(calls[-1], "b3")
+
+    def test_ask_and_wait(self):
+        self.busy_main()
+        r = self.make("aaaaaaaaaaa", problem_choice="ask", backup_model="b2")
+        r._ask_problem = lambda kind, model, options: ("wait", "")
+        sm = r.run()
+        self.assertEqual((sm["done"], sm["waiting"], sm["gemini_wait"]), (0, 1, "busy"))
+
+    def test_ask_and_cancel(self):
+        self.busy_main()
+        r = self.make("aaaaaaaaaaa", problem_choice="ask", backup_model="b2")
+        r._ask_problem = lambda kind, model, options: ("cancel", "")
+        sm = r.run()
+        self.assertTrue(sm["stopped"])
+        self.assertEqual(sm["waiting"], 0)
+
+    def test_nobody_to_ask_means_wait(self):
+        calls = self.busy_main()
+        sm = self.make("aaaaaaaaaaa", problem_choice="ask", backup_model="b2").run()  # automatic run: no asker
+        self.assertEqual((sm["waiting"], sm["gemini_wait"]), (1, "busy"))
+        self.assertNotIn("b2", calls)  # never silently uses another model
+
+    def test_cooling_or_out_models_get_no_request(self):
+        calls = []
+        core.generate = lambda key, model, system, transcript: calls.append(model) or "ok text"
+        import time as _t
+        sm = self.make("aaaaaaaaaaa", problem_choice="backup", backup_model="b2",
+                       cooloff={"m": _t.time() + 600}).run()
+        self.assertEqual((sm["done"], calls), (1, ["b2"]))
+        calls.clear()
+        sm = self.make("aaaaaaaaaaa", problem_choice="wait", out_today=("m",), skip_existing=False).run()
+        self.assertEqual((calls, sm["gemini_wait"]), ([], "out"))
+
+
+class PlanSplitTests(unittest.TestCase):
+    def test_waiting_first_and_each_list_needs_its_model(self):
+        s = {"backlog_per_day": 3}
+        worklist.add_backlog(s, "u", "u", [("bbbbbbbbbbb", ""), ("ccccccccccc", "")])
+        self.assertEqual(worklist.plan_split(s), ([], ["bbbbbbbbbbb", "ccccccccccc"]))
+        worklist.add_waiting(s, "aaaaaaaaaaa", "new")
+        worklist.check_all_now(s)
+        self.assertEqual(worklist.plan_split(s), (["aaaaaaaaaaa"], []))  # new streams first, on their own
+        # main model out for today: the backlog (its own model) still goes ahead
+        self.assertEqual(worklist.plan_split(s, waiting_ok=False), ([], ["bbbbbbbbbbb", "ccccccccccc"]))
+        self.assertEqual(worklist.plan_split(s, waiting_ok=False, backlog_ok=False), ([], []))
+
+
+class LiteHelperTests(unittest.TestCase):
+    """Flash-Lite helper: segments as data, tidied and laid out by the app (cases from a real Lite answer)."""
+    FORM = {"find": "a caller argues against the host", "min_minutes": "4", "detail_on": True,
+            "detail_label": "Stance", "summary_on": True, "trailing_period": True}
+    # what Gemini 3.5 Flash-Lite actually got wrong: Chaya split into 3 overlapping pieces, a too-long Katie
+    LITE = {"segments": [
+        {"start": "00:27:58", "end": "01:10:30", "name": "James", "detail": "Christian", "summary": "Motion."},
+        {"start": "01:11:34", "end": "01:29:50", "name": "Katie", "detail": "Christian", "summary": "Water."},
+        {"start": "02:22:30", "end": "02:52:30", "name": "Kaya", "detail": "Jewish", "summary": "Slavery."},
+        {"start": "02:46:58", "end": "02:52:58", "name": "Kaya", "detail": "Jewish", "summary": "More."},
+        {"start": "02:49:54", "end": "02:54:20", "name": "kaya ", "detail": "Jewish", "summary": "Talmud."},
+        {"start": "02:58:00", "end": "03:00:00", "name": "Brief", "detail": "", "summary": "Too short."},
+    ]}
+
+    def test_parse_and_tidy(self):
+        segs = core.parse_segments("```json\n" + json.dumps(self.LITE) + "\n```")
+        self.assertEqual(len(segs), 6)
+        tidy = core.tidy_segments(segs, 4, duration=4 * 3600)
+        self.assertEqual([(core.fmt_ts(x["start"]), x["name"]) for x in tidy],
+                         [("00:27:58", "James"), ("01:11:34", "Katie"), ("02:22:30", "Kaya")])
+        kaya = tidy[2]
+        self.assertEqual((kaya["end"] - kaya["start"]) // 60, 31)  # one call, 02:22:30 -> 02:54:20
+        self.assertEqual(kaya["summary"], "Slavery.")  # from the longest piece
+
+    def test_merge_only_close_pieces_of_the_same_name(self):
+        segs = [{"start": 0, "end": 600, "name": "Ann", "detail": "", "summary": ""},
+                {"start": 700, "end": 1200, "name": "Ann", "detail": "", "summary": ""},   # 100 s gap: merged
+                {"start": 1500, "end": 2000, "name": "Ann", "detail": "", "summary": ""},  # 300 s gap: separate
+                {"start": 2050, "end": 2600, "name": "Bob", "detail": "", "summary": ""}]  # other name: separate
+        tidy = core.tidy_segments(segs)
+        self.assertEqual([(x["name"], x["start"], x["end"]) for x in tidy],
+                         [("Ann", 10, 1200), ("Ann", 1500, 2000), ("Bob", 2050, 2600)])
+
+    def test_render_in_the_chosen_format(self):
+        tidy = core.tidy_segments(core.parse_segments(json.dumps(self.LITE)), 4)
+        text = pb.render_segments(self.FORM, tidy)
+        self.assertTrue(text.startswith("Timestamps:\n\n00:00 – Intro\n\n00:27:58 – James – Christian – "
+                                        "Length: ~43 minutes – Motion.\n\n"))
+        self.assertIn("01:11:34 – Katie – Christian – Length: ~18 minutes – Water.", text)
+        self.assertTrue(text.rstrip().endswith("."))
+        self.assertEqual(core.check_result(text, 4 * 3600), [])
+        self.assertEqual(pb.render_segments(self.FORM, []), "No qualifying segments found.\n")
+
+    def test_bad_json(self):
+        self.assertIsNone(core.parse_segments("Sorry, I can't do that."))
+        self.assertEqual(core.parse_segments('{"segments": [{"start": "x", "end": "1:00", "name": "A"}]}'), [])
+
+    def test_data_prompt_has_the_length_rule(self):
+        p = pb.build_data_prompt(self.FORM)
+        self.assertIn("when that person leaves", p)
+        self.assertIn("Never split one call", p)
+        self.assertIn("{min_minutes}", p)
+
+
+class LiteHelperRunTests(FakeRunTests):
+    def make_lite(self, answers, **kw):
+        sent = []
+
+        def fake_json(key, model, system, contents, thinking=True):
+            sent.append((model, "DRAFT LIST" in contents, thinking))
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return a
+        core.generate_json, self._orig_json = fake_json, core.generate_json
+        self.addCleanup(lambda: setattr(core, "generate_json", self._orig_json))
+        r = self.make("aaaaaaaaaaa", form=LiteHelperTests.FORM, **kw)
+        r.cfg.model = r._model = "gemini-3.5-flash-lite"
+        long_stream = {"title": "Long stream", "duration": 4 * 3600,
+                       "automatic_captions": {"en": [{"ext": "json3", "url": "u"}]}}
+        r._fetch_info = lambda url: long_stream
+        return r, sent
+
+    def test_two_passes_then_tidy(self):
+        first = json.dumps(LiteHelperTests.LITE)
+        checked = json.dumps({"segments": LiteHelperTests.LITE["segments"][:3]})
+        r, sent = self.make_lite([first, checked])
+        sm = r.run()
+        self.assertEqual(sm["done"], 1, self.logs)
+        self.assertEqual([(m, d) for m, d, _ in sent], [("gemini-3.5-flash-lite", False), ("gemini-3.5-flash-lite", True)])
+        text = Path(sm["saved"][0]).read_text(encoding="utf-8")
+        self.assertIn("02:22:30 – Kaya – Jewish – Length: ~30 minutes", text)
+        self.assertEqual(text.count("Kaya"), 1)
+        self.assertEqual(self.calls, [])  # the normal text prompt wasn't used
+
+    def test_check_step_failing_keeps_the_first_list(self):
+        r, sent = self.make_lite([json.dumps(LiteHelperTests.LITE), "not json"])
+        sm = r.run()
+        self.assertEqual(sm["done"], 1)
+        self.assertIn("Kaya", Path(sm["saved"][0]).read_text(encoding="utf-8"))
+
+    def test_unreadable_answer_falls_back_to_the_normal_prompt(self):
+        r, sent = self.make_lite(["I'm not JSON"])
+        sm = r.run()
+        self.assertEqual(sm["done"], 1)
+        self.assertEqual(len(self.calls), 1)  # the normal text prompt was used instead
+
+    def test_model_without_thinking_setting(self):
+        refusal = RuntimeError("400 INVALID_ARGUMENT. Thinking level is not supported for this model.")
+        r, sent = self.make_lite([refusal, json.dumps(LiteHelperTests.LITE), json.dumps(LiteHelperTests.LITE)])
+        self.assertEqual(r.run()["done"], 1, self.logs)
+        self.assertEqual([t for _, _, t in sent], [True, False, False])  # asked once more without it, then never
+
+    def test_strong_models_and_hand_edited_prompts_skip_the_helper(self):
+        r, sent = self.make_lite([])
+        r.cfg.model = r._model = "gemini-4-hydrogen"
+        r.run()
+        self.assertEqual(sent, [])
+        r2, sent2 = self.make_lite([], skip_existing=False)
+        r2.cfg.form = None
+        r2.run()
+        self.assertEqual(sent2, [])
+
+
+class HourTypoTests(unittest.TestCase):
+    """Real case from 3.5 Flash-Lite: James's call (00:27:43 to about 01:10) came back starting at 02:27:43."""
+    LINES = ["[00:27:40] alright next up we have James on the line", "[00:28:00] hi James go ahead",
+             "[01:10:20] thanks James take care", "[02:22:46] Kaya is on the line", "[02:27:43] so Kaya says"]
+
+    def segs(self, start, end, name="James"):
+        return core.parse_segments(json.dumps({"segments": [{"start": start, "end": end, "name": name}]}))
+
+    def test_end_before_start_is_repaired_using_the_transcript(self):
+        s = self.segs("02:27:43", "01:10:30")
+        notes = core.repair_hour_typos(s, self.LINES, 4 * 3600)
+        self.assertEqual((core.fmt_ts(s[0]["start"]), core.fmt_ts(s[0]["end"])), ("00:27:43", "01:10:30"))
+        self.assertTrue(notes and "James" in notes[0])
+
+    def test_start_after_the_stream_ends(self):
+        s = self.segs("05:27:43", "", "James")
+        core.repair_hour_typos(s, self.LINES, 4 * 3600)
+        self.assertEqual(core.fmt_ts(s[0]["start"]), "00:27:43")  # the hour where James is mentioned
+
+    def test_good_segments_are_left_alone(self):
+        s = self.segs("02:22:46", "02:52:10", "Kaya")
+        self.assertEqual(core.repair_hour_typos(s, self.LINES, 4 * 3600), [])
+        self.assertEqual(core.fmt_ts(s[0]["start"]), "02:22:46")
+
+    def test_whole_flow_puts_james_back(self):
+        lite = {"segments": [{"start": "02:27:43", "end": "01:10:30", "name": "James"},
+                             {"start": "01:11:47", "end": "01:29:50", "name": "Katie"}]}
+        s = core.parse_segments(json.dumps(lite))
+        core.repair_hour_typos(s, self.LINES, 4 * 3600)
+        tidy = core.tidy_segments(s, 4, 4 * 3600)
+        text = pb.render_segments({"find": "x", "detail_on": False, "summary_on": False}, tidy)
+        self.assertIn("00:27:43 – James – Length: ~43 minutes", text)
+        self.assertLess(text.index("James"), text.index("Katie"))
+
+
+class OverlapWarningTests(unittest.TestCase):
+    def test_check_result_warns_about_overlaps_from_any_model(self):
+        text = "00:00 – Intro\n02:23:34 – Kaya – Length: ~30 minutes\n02:48:54 – Steven – Length: ~22 minutes\n"
+        self.assertTrue(any("runs past the next one" in w for w in core.check_result(text)))
+        ok = "00:00 – Intro\n02:23:34 – Kaya – Length: ~30 minutes\n02:54:54 – Steven – Length: ~16 minutes\n"
+        self.assertFalse(any("runs past" in w for w in core.check_result(ok)))
+
+    def test_the_helper_never_moves_calls_because_of_an_overlap(self):
+        self.assertFalse(hasattr(core, "repair_overlaps"))
+
+
+class BusySwitchTests(LiteHelperRunTests):
+    def test_switch_from_lite_skips_the_check_request_and_shows_progress(self):
+        statuses = []
+        r, sent = self.make_lite([RuntimeError("503 UNAVAILABLE. The model is overloaded.")] * 3
+                                 + [json.dumps(LiteHelperTests.LITE)], problem_choice="backup",
+                                 backup_model="gemini-3.8-flash")
+        r._sleep = lambda s: None
+        r.status = statuses.append
+        sm = r.run()
+        self.assertEqual(sm["done"], 1, self.logs)
+        self.assertEqual([m for m, _, _ in sent], ["gemini-3.5-flash-lite"] * 3 + ["gemini-3.8-flash"])  # no 2nd pass
+        self.assertTrue(any("asking it now" in m for _, m in self.logs))
+
+    def test_waiting_clock(self):
+        import time as _t
+        statuses = []
+        r = self.make("aaaaaaaaaaa")
+        r.status = statuses.append
+        self.assertEqual(r._interruptible(lambda: (_t.sleep(5.6), "ok")[1], waiting="Waiting for m's answer"), "ok")
+        self.assertTrue(any(x.startswith("Waiting for m's answer… 0:05") for x in statuses), statuses)
