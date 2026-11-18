@@ -1046,6 +1046,16 @@ if __name__ == "__main__":
 
 
 class GeminiRetryTests(FakeRunTests):
+    def test_error_brief_names_the_real_problem(self):
+        busy = "503 UNAVAILABLE. {'error': {'code': 503, 'message': 'The model is overloaded.', 'status': 'x'}}"
+        rate = "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota'}}"
+        self.assertEqual(core.gemini_error_brief(busy), "503 UNAVAILABLE: The model is overloaded.")
+        self.assertEqual(core.gemini_error_brief(rate), "429 RESOURCE_EXHAUSTED: You exceeded your current quota")
+        self.assertIn("busy", core.gemini_problem_kind(busy))
+        self.assertIn("rate limit", core.gemini_problem_kind(rate))
+        self.assertEqual(core.gemini_problem_kind("The read operation timed out"), "timed out")
+        self.assertEqual(core.gemini_error_brief(""), "no details")
+
     def test_busy_for_every_try_then_backup_and_cooloff(self):
         models, waits = [], []
 
