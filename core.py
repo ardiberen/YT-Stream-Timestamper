@@ -678,6 +678,25 @@ def download_text(url: str, retries: int = 3, stop: Optional[threading.Event] = 
     raise RuntimeError(f"caption download failed: {last}")
 
 
+def audio_format_note(fmt: dict, path: Optional[Path] = None) -> str:
+    """One log line about the audio version yt-dlp picked, e.g. 'Audio version: 249 (webm, https, 50 kbps);
+    downloaded 41.2 MB of about 41.0 MB'. Helps tell a cut-short download from a short recording."""
+    bits = [str(fmt.get(k)) for k in ("ext", "protocol") if fmt.get(k)]
+    if fmt.get("abr"):
+        bits.append(f"{fmt['abr']:.0f} kbps")
+    if fmt.get("format_note"):
+        bits.append(str(fmt["format_note"]))
+    note = f"Audio version: {fmt.get('format_id') or '?'}" + (f" ({', '.join(bits)})" if bits else "")
+    expected = fmt.get("filesize") or fmt.get("filesize_approx")
+    try:
+        got = path.stat().st_size if path is not None else None
+    except OSError:
+        got = None
+    if got is not None:
+        note += f"; downloaded {got / 1e6:.1f} MB" + (f" of about {expected / 1e6:.1f} MB" if expected else "")
+    return note
+
+
 AUDIO_COMPLETE_SHARE = 0.9  # a downloaded recording shorter than this share of the stream is treated as partial
 COOLOFF_SECONDS = 15 * 60  # a model that stays busy isn't asked again for this long
 GEMINI_TIMEOUT_MS = 10 * 60 * 1000  # a request that hangs longer than this fails (and can be retried)
@@ -1248,6 +1267,8 @@ class Runner:
         self._titles[vid] = title
         self.log(f"Title: {title}")
         live = info.get("live_status")
+        if live == "post_live":
+            self.log("YouTube says this stream ended recently and is still being processed.")
         if live == "is_upcoming":
             self.log(f"Skipping {vid}: the stream hasn't started yet.", "warn")
             return "skipped", True
@@ -1405,9 +1426,12 @@ class Runner:
         self._fragment_globs = [(folder, glob_escape(vid) + ".*")]  # the download, finished or not
         self.log("Downloading the stream's audio (smallest audio-only version, logged out) ...")
         self._sleep(random.uniform(2, 5))
+        picked = {}
+
         def fetch():
             with yt_dlp.YoutubeDL(opts) as ydl:
                 done = ydl.process_ie_result(dict(info), download=True)
+                picked.update(done or {})
                 return Path(ydl.prepare_filename(done))
 
         try:
@@ -1432,6 +1456,7 @@ class Runner:
                 return None
             path = found[0]
         self._fragments = [path]
+        self.log(audio_format_note(picked, path))
         return path
 
     # ---- asking Gemini (with retries, and what to do when a model is busy or out of today's requests)

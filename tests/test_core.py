@@ -256,6 +256,15 @@ class FakeRunTests(unittest.TestCase):
         r._list_entries = lambda url: [{"id": "aaaaaaaaaaa"}, {"id": "bbbbbbbbbbb"}]
         return r
 
+    def test_audio_format_note(self):
+        p = Path(self.tmp.name, "a.webm")
+        p.write_bytes(b"0" * 4_100_000)
+        self.assertEqual(core.audio_format_note({"format_id": "249", "ext": "webm", "protocol": "https", "abr": 49.7,
+                                                 "filesize": 41_000_000}, p),
+                         "Audio version: 249 (webm, https, 50 kbps); downloaded 4.1 MB of about 41.0 MB")
+        self.assertEqual(core.audio_format_note({"format_id": "139"}, p), "Audio version: 139; downloaded 4.1 MB")
+        self.assertEqual(core.audio_format_note({}), "Audio version: ?")
+
     def test_partial_audio_goes_on_the_waiting_list(self):
         import transcribe
         orig = transcribe.media_duration
