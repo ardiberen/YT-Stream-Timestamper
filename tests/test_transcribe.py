@@ -139,14 +139,15 @@ class LinkTranscribeTests(unittest.TestCase):
         core.generate, tr.load_model, tr.CHUNK_SECONDS = self.old
         self.tmp.cleanup()
 
-    def runner(self, **kw):
+    def runner(self, duration=66, **kw):
+        kw.setdefault("min_stream_minutes", 1)  # the fake stream is 66 s long; its fake audio 65 s
         cfg = core.RunConfig(api_key="k", model="m", prompt="p", output_dir=self.out, delay_min=0, delay_max=0,
                              use_whisper=True, **kw)
         logs = []
         r = core.Runner(cfg, "aaaaaaaaaaa", lambda m, l="info": logs.append(m), lambda *a: None, lambda m: None,
                         threading.Event())
         r._sleep = lambda s: None
-        r._fetch_info = lambda url: {"title": "Big: Debate?", "duration": 7200}
+        r._fetch_info = lambda url: {"title": "Big: Debate?", "duration": duration}
 
         def fake_download(vid, url, info, folder):
             folder.mkdir(parents=True, exist_ok=True)
@@ -167,6 +168,18 @@ class LinkTranscribeTests(unittest.TestCase):
         self.assertTrue(Path(self.out, "Big Debate [aaaaaaaaaaa].txt").exists())
         self.assertTrue(self.sent and self.sent[0].startswith("[00:00:00] words at 0"))
 
+    def test_partial_audio_waits_instead_of_making_timestamps(self):
+        r, logs = self.runner(duration=7200)  # YouTube said 2 hours but gave 65 s of audio
+        sm = r.run()
+        self.assertEqual((sm["done"], sm["waiting"], sm["waiting_list"]), (0, 1, [("aaaaaaaaaaa", "Big: Debate?")]),
+                         logs)
+        t = Path(self.out, "Transcripts")
+        self.assertEqual(list((t / "audio").iterdir()), [])  # the partial audio is deleted
+        self.assertFalse((t / "Big Debate [aaaaaaaaaaa].srt").exists())  # no transcript, no result, nothing sent
+        self.assertFalse(Path(self.out, "Big Debate [aaaaaaaaaaa].txt").exists())
+        self.assertEqual(self.sent, [])
+        self.assertTrue(any("only 00:01:05 of this 02:00:00 stream" in m for m in logs), logs)
+
     def test_existing_transcript_is_reused(self):
         self.runner()[0].run()
         r, logs = self.runner(skip_existing=False)
@@ -177,7 +190,7 @@ class LinkTranscribeTests(unittest.TestCase):
     def test_audio_from_an_interrupted_try_is_reused(self):
         folder = Path(self.out, "Transcripts", "audio")
         folder.mkdir(parents=True)
-        make_wav(folder / "Big Debate [aaaaaaaaaaa].wav", 40)
+        make_wav(folder / "Big Debate [aaaaaaaaaaa].wav", 65)
         r, logs = self.runner()
         self.assertEqual(r.run()["done"], 1)
         self.assertEqual(self.downloads, [])
