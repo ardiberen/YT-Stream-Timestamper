@@ -3,12 +3,30 @@
 #
 #   * Actions tab -> "Release build" -> Run workflow : test build (no release; download it from the run page)
 #   * Create a GitHub release (tag like v0.4.2)      : builds and attaches the files to that release
+#   * Called by ytdlp-watch.yml with a tag            : builds that tag and publishes the release only if
+#                                                       everything passes (automatic yt-dlp updates)
 name: Release build
 
 on:
   release:
     types: [published]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to build and publish as a new release (e.g. v0.9.3)"
+        type: string
+        required: true
+      ytdlp_version:
+        description: "Exact yt-dlp version to build with"
+        type: string
+        required: false
+        default: ""
+      notes:
+        description: "Release notes"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: write       # attach files to the release
@@ -23,6 +41,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
         with:
           persist-credentials: false
+          ref: ${{ inputs.tag }}  # empty (normal runs) = the default for the event
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
@@ -37,11 +56,15 @@ jobs:
 
       - name: Install packages
         shell: pwsh
+        env:
+          YTDLP_VERSION: ${{ inputs.ytdlp_version }}
         run: |
           # refuse an interpreter without the October 2026 security fixes (CVE-2026-115557, CVE-2026-114583)
           python -c "import sys; assert sys.version_info >= (3, 14, 10), sys.version"
           python -m pip install --upgrade pip
           pip install --upgrade -r requirements.txt
+          # automatic yt-dlp releases build with exactly the version that was checked, never a newer one
+          if ($env:YTDLP_VERSION) { pip install "yt-dlp[default]==$env:YTDLP_VERSION" }
           python -c "import yt_dlp, yt_dlp_ejs, google.genai, customtkinter, PIL, tzdata, faster_whisper"
           pip freeze > build-versions.txt
           "# built with $(python --version)" | Out-File -Append -Encoding ascii build-versions.txt
@@ -61,7 +84,7 @@ jobs:
       - name: Release checks (version tag, README contact)
         shell: pwsh
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           $v = (python -c "import version; print(version.APP_VERSION)").Trim()
           "VERSION=$v" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
@@ -126,8 +149,17 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: gh release upload "$env:TAG" "${env:ZIP}" "${env:ZIP}.sha256" "${env:EXE_SHA}" build-versions.txt --clobber
 
+      - name: Publish the release (automatic yt-dlp update)
+        if: inputs.tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          NOTES: ${{ inputs.notes }}
+        run: gh release create "$env:TAG" "${env:ZIP}" "${env:ZIP}.sha256" "${env:EXE_SHA}" build-versions.txt --verify-tag --title "$env:TAG" --notes "$env:NOTES"
+
       - name: Keep files from a test run
-        if: github.event_name != 'release'
+        if: github.event_name != 'release' && inputs.tag == ''
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
         with:
           name: test-build

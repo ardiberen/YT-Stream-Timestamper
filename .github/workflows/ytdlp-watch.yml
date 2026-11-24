@@ -1,0 +1,127 @@
+# Once a day: if a newer yt-dlp is out (and at least a day old), release a new app version built with it.
+#
+# YouTube changes things every few weeks and yt-dlp follows within days. Without a new release the app keeps
+# the old yt-dlp and stops being able to download or read streams. This makes the new release by itself:
+#   1. compare the newest yt-dlp on PyPI with the one in the latest release (build-versions.txt)
+#   2. raise the version in version.py (unless main already has an unreleased version) and tag it
+#   3. run the normal release build on that tag (tests, security check, Windows build, self-test) with exactly
+#      that yt-dlp, and publish the release only if all of it passes
+#   4. put the version change on main; if the build failed, remove the tag again (GitHub emails the failure)
+# Users still download the new version themselves: the app shows its "new version available" notice.
+#
+#   * Actions tab -> "Automatic yt-dlp update" -> Run workflow : check now instead of waiting for the schedule
+name: Automatic yt-dlp update
+
+on:
+  schedule:
+    - cron: "17 10 * * *"  # daily, 10:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ytdlp-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # push the version tag
+    outputs:
+      need: ${{ steps.check.outputs.need }}
+      version: ${{ steps.check.outputs.version }}
+      ytdlp: ${{ steps.check.outputs.ytdlp }}
+      bump: ${{ steps.check.outputs.bump }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Look for a newer yt-dlp
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern build-versions.txt --output latest-build-versions.txt
+          git tag -l > tags.txt
+          python3 -I .github/scripts/ytdlp_watch.py latest-build-versions.txt tags.txt | tee -a "$GITHUB_OUTPUT"
+          grep '^reason=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2- >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tag the new version
+        if: steps.check.outputs.need == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+          YTDLP: ${{ steps.check.outputs.ytdlp }}
+          BUMP: ${{ steps.check.outputs.bump }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "$BUMP" = "true" ]; then
+            sed -i -E "s/^APP_VERSION = \"[^\"]+\"/APP_VERSION = \"$VERSION\"/" version.py
+            grep -q "^APP_VERSION = \"$VERSION\"" version.py
+            git commit -am "Version $VERSION: yt-dlp $YTDLP"
+          fi
+          git tag "v$VERSION"
+          git push origin "refs/tags/v$VERSION"
+
+  build:
+    needs: check
+    if: needs.check.outputs.need == 'true'
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: v${{ needs.check.outputs.version }}
+      ytdlp_version: ${{ needs.check.outputs.ytdlp }}
+      notes: |
+        ## What's new in ${{ needs.check.outputs.version }}
+        - Updated yt-dlp (the part that talks to YouTube) to ${{ needs.check.outputs.ytdlp }}, so the app keeps working after YouTube's latest changes.
+
+        This release was made automatically after the app's tests and a test build passed with the new yt-dlp.
+
+        To update: download the zip below, delete your old app folder, and unzip the new one. Your settings and results are kept.
+
+  finish:
+    needs: [check, build]
+    if: needs.check.outputs.bump == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # put the version change on main
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Put the version change on main
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "refs/tags/v$VERSION:refs/tags/v$VERSION"
+          git merge --ff-only "v$VERSION" || git merge --no-edit "v$VERSION"
+          git push origin HEAD:main
+
+  cleanup:
+    needs: [check, build]
+    if: always() && needs.check.outputs.need == 'true' && needs.build.result != 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # remove the tag of the failed attempt, so tomorrow's try reuses the version number
+    steps:
+      - name: Remove the tag (nothing was published)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v$VERSION was published after all; keeping its tag." >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/v$VERSION"
+            echo "The build of v$VERSION failed, so nothing was published and the tag was removed." >> "$GITHUB_STEP_SUMMARY"
+          fi

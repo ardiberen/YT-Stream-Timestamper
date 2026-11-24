@@ -256,6 +256,27 @@ class FakeRunTests(unittest.TestCase):
         r._list_entries = lambda url: [{"id": "aaaaaaaaaaa"}, {"id": "bbbbbbbbbbb"}]
         return r
 
+    def test_partial_audio_goes_on_the_waiting_list(self):
+        import transcribe
+        orig = transcribe.media_duration
+        try:
+            r = self.make("aaaaaaaaaaa")
+            audio = Path(self.tmp.name, "a.m4a")
+            for got, dur, live, ok in ((660, 7200, None, False),  # 11 min of a 2 h stream: partial
+                                       (7150, 7200, None, True),  # whole stream (lengths differ slightly)
+                                       (660, 0, "post_live", True),  # unknown length: can't tell, warn only
+                                       (None, 7200, None, True)):  # unreadable length: let Whisper try
+                audio.write_bytes(b"x")
+                transcribe.media_duration = lambda path, got=got: got
+                r.waiting.clear()
+                self.assertEqual(r._audio_complete("vid", "T", audio, dur, live), ok, (got, dur))
+                self.assertEqual(audio.exists(), ok)
+                self.assertEqual(r.waiting, [] if ok else [("vid", "T")])
+            self.assertTrue(any("only 00:11:00 of this 02:00:00 stream" in m for _, m in self.logs), self.logs)
+            self.assertTrue(any("still processing it" in m for _, m in self.logs))
+        finally:
+            transcribe.media_duration = orig
+
     def test_flow(self):
         urls = ("https://youtu.be/aaaaaaaaaaa\nbbbbbbbbbbb\nccccccccccc\nddddddddddd\n"
                 "https://www.youtube.com/@Chan\naaaaaaaaaaa\n")

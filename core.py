@@ -678,6 +678,7 @@ def download_text(url: str, retries: int = 3, stop: Optional[threading.Event] = 
     raise RuntimeError(f"caption download failed: {last}")
 
 
+AUDIO_COMPLETE_SHARE = 0.9  # a downloaded recording shorter than this share of the stream is treated as partial
 COOLOFF_SECONDS = 15 * 60  # a model that stays busy isn't asked again for this long
 GEMINI_TIMEOUT_MS = 10 * 60 * 1000  # a request that hangs longer than this fails (and can be retried)
 
@@ -1312,6 +1313,8 @@ class Runner:
             if audio != named:
                 os.replace(audio, named)
                 audio = named
+            if not self._audio_complete(vid, title, audio, dur, info.get("live_status")):
+                return "waiting"
             if self._whisper_model is None:
                 self.status("Loading the speech model…")
                 self._whisper_model = self._interruptible(transcribe.load_model, c.whisper_model)
@@ -1351,6 +1354,36 @@ class Runner:
             self.log(f"{vid}: the transcript is empty (no speech found).", "error")
             return "failed"
         return self._finish(lines, title, Path(c.output_dir, f"{safe_filename(title)} [{vid}].txt"), dur)
+
+    def _audio_complete(self, vid: str, title: str, audio: Path, dur, live_status=None) -> bool:
+        """Is the downloaded audio the whole stream? Right after a stream ends, YouTube can hand out only part
+        of the recording while it's still processing it, and timestamps made from that look fine but miss most
+        of the stream. A clearly short download is deleted and the stream goes on the waiting list instead."""
+        import transcribe
+
+        try:
+            got = transcribe.media_duration(str(audio))
+        except Exception:  # noqa: BLE001  (unreadable length: let the transcription find out)
+            got = None
+        if got:
+            self.log(f"Audio length: {fmt_ts(int(got))}" + (f" (the stream is {fmt_ts(int(dur))})" if dur else
+                                                           " (YouTube didn't say how long the stream is)"))
+        if dur and got and got < AUDIO_COMPLETE_SHARE * dur:
+            self.log(f"{vid}: YouTube gave only {fmt_ts(int(got))} of this {fmt_ts(int(dur))} stream. It's probably "
+                     "still processing the recording, so it goes on the waiting list to try again later.", "warn")
+        elif not dur and live_status == "post_live" and got:
+            self.log(f"{vid}: this stream ended recently and YouTube is still processing it, so the audio may be "
+                     "incomplete. If the timestamps stop early, run it again in a few hours.", "warn")
+            return True
+        else:
+            return True
+        try:
+            audio.unlink()
+        except OSError:
+            pass
+        self._fragments, self._fragment_globs = [], []
+        self.waiting.append((vid, title))
+        return False
 
     def _download_audio(self, vid: str, url: str, info: dict, folder: Path) -> Optional[Path]:
         """Download the smallest audio-only version of a stream (logged out). Resumes a half-finished download."""
