@@ -906,12 +906,12 @@ class App(ctk.CTk):
         r = srow(i, r, "When a model is busy or out", ctk.CTkOptionMenu(
             i, values=list(PROBLEM_CHOICES.values()), variable=self.v_problem, width=260, height=34),
                  "What to do when Gemini stays busy, or a model has used up today's free requests. 'Wait' puts the "
-                 "streams on the Queue page's waiting list. Automatic Queue runs never ask: they wait unless you "
-                 "pick something else here.")
+                 "streams on the Queue page's waiting list. With 'Ask me each time', automatic Queue runs don't ask: "
+                 "they wait.")
         r = srow(i, r, "Backup model", ctk.CTkComboBox(i, values=[NO_BACKUP] + ui.MODELS, variable=self.v_backup,
                                                         width=260, height=34),
-                 "Offered first when the main model is busy or out of requests. Each model has its own free daily "
-                 "limit.")
+                 "Used when the main model is busy or out of requests (Flash-Lite works best on free keys). Each "
+                 "model has its own free daily limit.")
         lf = ctk.CTkFrame(i, fg_color="transparent")
         ctk.CTkCheckBox(lf, text="Extra accuracy for Flash-Lite models", variable=self.v_lite_helper,
                         font=ui.font(13)).pack(side="left")

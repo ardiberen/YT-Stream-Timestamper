@@ -923,18 +923,24 @@ def build_ydl_opts(extra: list[str], deno_path: Optional[str], logger, base_args
 
 
 class _YtLogger:
-    def __init__(self, log):
-        self.log = log
-
     def debug(self, msg):
         pass
 
     def info(self, msg):
         pass
 
+    def __init__(self, log):
+        self.log = log
+        self._explained = False
+
     def warning(self, msg):
         if re.search(r"javascript runtime|ejs", msg, re.I):
             self.log(f"yt-dlp: {msg}", "warn")
+            if re.search(r"challenge solving failed", msg, re.I) and not self._explained:
+                self._explained = True
+                self.log("This usually means YouTube changed something on its side and this version of the app "
+                         "can't keep up yet. Downloads may be slow or fail. A newer version of the app normally "
+                         "fixes it (the app tells you when one is out).", "warn")
 
     def error(self, msg):
         pass  # the raised DownloadError carries the same text

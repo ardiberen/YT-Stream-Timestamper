@@ -1,4 +1,5 @@
-yt-dlp[default]
+# 2026.11.23+: fixes YouTube's "n challenge solving failed" (YouTube player change in November 2026)
+yt-dlp[default]>=2026.11.23
 google-genai
 customtkinter
 pyinstaller
