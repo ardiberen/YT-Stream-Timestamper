@@ -1616,6 +1616,59 @@ class OverlapWarningTests(unittest.TestCase):
         self.assertFalse(hasattr(core, "repair_overlaps"))
 
 
+def _transcript(hours, every=15, said=None):
+    """[HH:MM:SS] lines every `every` seconds; said: {seconds: text} at those times."""
+    said = said or {}
+    return [f"[{core.fmt_ts(t)}] {said.get(t, 'talk')}" for t in range(0, int(hours * 3600), every)]
+
+
+class LitePartsTests(unittest.TestCase):
+    def test_split_long_transcripts_into_overlapping_parts(self):
+        self.assertEqual(len(core.split_transcript_parts(_transcript(2))), 1)  # up to ~2 h: one read
+        parts = core.split_transcript_parts(_transcript(7))
+        self.assertEqual(len(parts), 5)
+        starts = [p[0][1:9] for p in parts]
+        self.assertEqual(starts, ["00:00:00", "01:20:00", "02:40:00", "04:00:00", "05:20:00"])
+        self.assertEqual(parts[0][-1][1:9], "01:29:45")  # 90 min parts, 10 min shared with the next
+        self.assertEqual(parts[-1][-1][1:9], "06:59:45")  # the short remainder joined the last part
+        self.assertEqual(len(core.split_transcript_parts(_transcript(2.2))), 2)
+
+    def test_merge_parts(self):
+        def seg(a, b, name):
+            return {"start": a * 60, "end": b * 60 if b is not None else None, "name": name, "detail": "",
+                    "summary": ""}
+        part1 = [seg(10, 40, "Ann"), seg(80, 90, "Sephu")]  # Sephu cut at part 1's end (1:30)
+        part2 = [seg(80, 111, "Sefu"), seg(130, 160, "Bo"), seg(150, 170, "Cy")]  # same call, spelled differently
+        merged = core.merge_part_segments([part1, part2])
+        self.assertEqual([(x["name"], x["start"] // 60, x["end"] // 60) for x in merged],
+                         [("Ann", 10, 40), ("Sefu", 80, 111), ("Bo", 130, 160), ("Cy", 150, 170)])  # same-part kept
+        # a call seen whole in both parts (in the overlap) is listed once
+        self.assertEqual(len(core.merge_part_segments([[seg(82, 88, "Dee")], [seg(82, 89, "Dee")]])), 1)
+
+
+class LitePartsRunTests(LiteHelperRunTests):
+    def test_long_stream_is_read_in_parts_and_nothing_in_the_middle_is_lost(self):
+        callers = {h * 3600 + 600: f"caller{h}" for h in range(7)}  # a caller 10 min into every hour
+        lines = _transcript(7, said={t: f"welcome {n}" for t, n in callers.items()})
+        sent = []
+
+        def fake_json(key, model, system, contents, thinking=True):
+            seen = [n for t, n in callers.items() if f"welcome {n}" in contents.split("DRAFT LIST")[0]]
+            sent.append(("DRAFT LIST" in contents, "part " in contents.split("Transcript")[0], seen))
+            return json.dumps({"segments": [{"start": core.fmt_ts(t), "end": core.fmt_ts(t + 1800), "name": n}
+                                            for t, n in callers.items() if n in seen]})
+        core.generate_json, orig = fake_json, core.generate_json
+        self.addCleanup(lambda: setattr(core, "generate_json", orig))
+        r = self.make("aaaaaaaaaaa", form=LiteHelperTests.FORM)
+        r.cfg.model = r._model = "gemini-3.5-flash-lite"
+        text = r._ask_with_helper("\n".join(lines), 7 * 3600)
+        self.assertEqual(len(sent), 10)  # 5 parts x (find + check)
+        self.assertTrue(all(told for _, told, _ in sent))  # each request says which part it is
+        for n in callers.values():
+            self.assertEqual(text.count(n), 1, text)  # every caller once, none lost in the middle
+        self.assertTrue(any("5 overlapping parts" in m for _, m in self.logs), self.logs)
+
+
 class BusySwitchTests(LiteHelperRunTests):
     def test_switch_from_lite_skips_the_check_request_and_shows_progress(self):
         statuses = []
