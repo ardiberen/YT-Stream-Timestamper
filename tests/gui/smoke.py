@@ -17,6 +17,7 @@ import customtkinter as ctk  # fake
 from tkinter import filedialog, messagebox  # fake
 
 import core
+core.rewrite_summaries = lambda key, model, items: [x["summary"] for x in items]  # no network
 import settings
 
 

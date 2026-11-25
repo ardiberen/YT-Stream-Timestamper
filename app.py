@@ -131,6 +131,7 @@ class App(ctk.CTk):
                                                       PROBLEM_CHOICES["ask"]))
         self.v_auto = bv(value=bool(s.get("auto_runs", True)))
         self.v_lite_helper = bv(value=bool(s.get("lite_helper", True)))
+        self.v_topic_summaries = bv(value=bool(s.get("topic_summaries", True)))
         self.v_backlog_url = sv(value="")
         self.v_backlog_day = sv(value=n(s.get("backlog_per_day", worklist.BACKLOG_PER_DAY)))
         self.v_backlog_model = sv(value=s.get("backlog_model") or "gemini-3.5-flash-lite")
@@ -920,6 +921,13 @@ class App(ctk.CTk):
                  "model check its list once more (2 requests per stream instead of 1), then works out the lengths, "
                  "merges a call that came back in pieces, and applies your minimum length itself. Stronger models "
                  "and hand-edited prompts aren't affected.")
+        tf = ctk.CTkFrame(i, fg_color="transparent")
+        ctk.CTkCheckBox(tf, text="Just the topics in one-line summaries", variable=self.v_topic_summaries,
+                        font=ui.font(13)).pack(side="left")
+        r = srow(i, r, "Short summaries", tf,
+                 "After the list is made, one small Flash-Lite request rewrites each one-line summary as just its "
+                 "topics (e.g. 'Contingency arguments for God' instead of 'Sephu calls in to debate the hosts "
+                 "about...'). Only the summaries are sent; times and names never change. Guided Prompt form only.")
         srow(i, r, "Merge captions into", self._with_unit(i, self.v_merge, "second blocks (0 = off)"),
              "Fewer, longer lines use fewer tokens. Timestamps can be up to this many seconds early. 15 is a good "
              "balance; up to 60 is allowed.")
@@ -1287,6 +1295,7 @@ class App(ctk.CTk):
         s["check_updates"] = bool(self.v_check_updates.get())
         s["auto_runs"] = bool(self.v_auto.get())
         s["lite_helper"] = bool(self.v_lite_helper.get())
+        s["topic_summaries"] = bool(self.v_topic_summaries.get())
         s["transcribe_then_timestamps"] = bool(self.v_then_ts.get())
         s["whisper_model"] = self.v_whisper.get() if self.v_whisper.get() in transcribe.MODELS else "base"
         adv = bool(self.v_adv.get())

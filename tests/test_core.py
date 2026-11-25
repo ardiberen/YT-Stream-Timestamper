@@ -223,6 +223,10 @@ class FakeRunTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.logs = []
         self.orig_dl, self.orig_gen = core.download_text, core.generate
+        self.orig_rw = core.rewrite_summaries
+        self.rewrites = []
+        core.rewrite_summaries = lambda key, model, items: self.rewrites.append((model, items)) or \
+            [x["summary"] for x in items]  # unchanged unless a test says otherwise
         core.download_text = lambda url, retries=3, stop=None: json.dumps(
             {"events": [{"tStartMs": 5000, "segs": [{"utf8": "caller one"}]}]})
         self.calls = []
@@ -235,6 +239,7 @@ class FakeRunTests(unittest.TestCase):
 
     def tearDown(self):
         core.download_text, core.generate = self.orig_dl, self.orig_gen
+        core.rewrite_summaries = self.orig_rw
         self.tmp.cleanup()
 
     def make(self, urls, **kw):
@@ -1622,6 +1627,30 @@ def _transcript(hours, every=15, said=None):
     return [f"[{core.fmt_ts(t)}] {said.get(t, 'talk')}" for t in range(0, int(hours * 3600), every)]
 
 
+RESULT = ("Timestamps:\n\n00:00 – Intro\n\n"
+          "00:08:41 – Beverly Portman – Born-again Christian – Length: ~21 minutes – Beverly discusses her faith "
+          "and the violent stories in the Bible.\n\n"
+          "01:37:45 – Sephu – Theist – Length: ~31 minutes – Sephu calls in to present contingency and "
+          "act-and-potency arguments for God.\n\n.\n")
+
+
+class TopicSummaryTests(unittest.TestCase):
+    FORM = {"summary_on": True, "length_on": True, "name_on": True, "detail_on": True, "separator": "–"}
+
+    def test_find_and_replace_only_the_summaries(self):
+        found = core.summary_fields(RESULT, self.FORM)
+        self.assertEqual([(about, old[:14]) for _, about, old in found],
+                         [("Beverly Portman – Born-again Christian", "Beverly discus"), ("Sephu – Theist", "Sephu calls in")])
+        out = core.replace_summaries(RESULT, self.FORM, found, ["Faith and violent Bible stories",
+                                                                "Contingency and act-and-potency arguments for God"])
+        self.assertEqual(out, RESULT.replace("Beverly discusses her faith and the violent stories in the Bible.",
+                                             "Faith and violent Bible stories")
+                         .replace("Sephu calls in to present contingency and act-and-potency arguments for God.",
+                                  "Contingency and act-and-potency arguments for God"))  # times untouched
+        self.assertEqual(core.summary_fields(RESULT, {**self.FORM, "summary_on": False}), [])
+        self.assertEqual(core.clean_summary("  faith and   doubt. "), "Faith and doubt")
+
+
 class LitePartsTests(unittest.TestCase):
     def test_split_long_transcripts_into_overlapping_parts(self):
         self.assertEqual(len(core.split_transcript_parts(_transcript(2))), 1)  # up to ~2 h: one read
@@ -1667,6 +1696,47 @@ class LitePartsRunTests(LiteHelperRunTests):
         for n in callers.values():
             self.assertEqual(text.count(n), 1, text)  # every caller once, none lost in the middle
         self.assertTrue(any("5 overlapping parts" in m for _, m in self.logs), self.logs)
+
+
+class TopicSummaryRunTests(FakeRunTests):
+    def run_with(self, rewrite, **kw):
+        core.generate = lambda key, model, system, transcript: RESULT
+        if rewrite is not None:
+            core.rewrite_summaries = rewrite
+        r = self.make("aaaaaaaaaaa", form=TopicSummaryTests.FORM, model_choices=("m", "gemini-3.5-flash-lite"), **kw)
+        sent = []
+        r._on_gemini = lambda event, model: sent.append((event, model))
+        sm = r.run()
+        return Path(sm["saved"][0]).read_text(encoding="utf-8") if sm["saved"] else "", sent
+
+    def test_summaries_shortened_with_flash_lite(self):
+        seen = []
+
+        def rewrite(key, model, items):
+            seen.append((model, items))
+            return ["faith and violent Bible stories.", "Contingency and act-and-potency arguments for God"]
+        text, sent = self.run_with(rewrite)
+        self.assertIn("– Length: ~21 minutes – Faith and violent Bible stories\n", text)
+        self.assertIn("01:37:45 – Sephu – Theist – Length: ~31 minutes – Contingency and act-and-potency", text)
+        self.assertEqual(seen[0][0], "gemini-3.5-flash-lite")  # never the main model's few daily requests
+        self.assertEqual(seen[0][1][1], {"about": "Sephu – Theist", "summary": RESULT.split(" – ")[-1].split("\n")[0]})
+        self.assertEqual(sent, [("sent", "m"), ("sent", "gemini-3.5-flash-lite")])
+
+    def test_problems_keep_the_original_summaries(self):
+        for rewrite in (lambda k, m, i: ["only one"],  # wrong count
+                        lambda k, m, i: (_ for _ in ()).throw(RuntimeError("400 INVALID_ARGUMENT"))):
+            text, _ = self.run_with(rewrite)
+            self.assertEqual(text, RESULT)
+            for f in Path(self.tmp.name).glob("*.txt"):
+                f.unlink()
+
+    def test_off_or_hand_edited_prompt_means_no_request(self):
+        text, sent = self.run_with(None, topic_summaries=False)
+        self.assertEqual((text, self.rewrites), (RESULT, []))
+        core.generate = lambda key, model, system, transcript: RESULT
+        r = self.make("aaaaaaaaaaa", skip_existing=False)  # hand-edited (Advanced) prompt: no form
+        r.run()
+        self.assertEqual(self.rewrites, [])
 
 
 class BusySwitchTests(LiteHelperRunTests):

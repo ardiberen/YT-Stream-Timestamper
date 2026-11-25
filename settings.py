@@ -97,6 +97,7 @@ DEFAULTS = {
     "auto_day": {},  # today's backlog count / daily-limit pause (Pacific date)
     "whisper_model": "base",
     "transcribe_then_timestamps": True,
+    "topic_summaries": True,  # guided form: one-line summaries shortened to just the topics (1 small request)
     "lite_helper": True,  # Flash-Lite models: segments as data, app does the maths, plus a checking pass
     # a model is busy / out of requests: ask | backup | wait | cancel. Default: switch to the backup (Flash-Lite)
     # without asking, so free keys keep working while Google answers "busy" for the other models
