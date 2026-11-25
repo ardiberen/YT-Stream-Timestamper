@@ -294,6 +294,13 @@ def busy_gen(key, model, system, transcript):
         raise RuntimeError("503 UNAVAILABLE. The model is overloaded.")
     return "Timestamps:\n\n00:00:05 – Caller – Length: ~5 minutes\n"
 core.generate = busy_gen
+_gj7 = core.generate_json
+def busy_json(key, model, system, contents, thinking=True):  # the Flash-Lite helper (backup is Flash-Lite)
+    used.append(model + " (data)")
+    if model == a.s["model"]:
+        raise RuntimeError("503 UNAVAILABLE. The model is overloaded.")
+    return '{"segments": [{"start": "00:05:00", "end": "00:20:00", "name": "Ann", "detail": "", "summary": ""}]}'
+core.generate_json = busy_json
 asked = []
 def answer(title, msg, options, check=None, select=None):
     asked.append((msg, [k for k, _, _ in options], select[2] if select else None))
@@ -311,15 +318,17 @@ pump(lambda: a.btn_start.kw.get("state") == "normal", timeout=15)
 check(asked and "busy right now" in asked[0][0], "asked what to do when the model stays busy")
 check(asked[0][1] == ["model", "wait", "cancel"], "offers another model, wait, or cancel")
 check(a.s["model"] not in (asked[0][2] or []), "the busy model isn't offered as the alternative")
-check(used[-1] == a.s["backup_model"], "the run carried on with the chosen model: " + used[-1])
+lite = a.s["backup_model"] + " (data)"
+check(used[-1] == lite, "the run carried on with the chosen model, using the Flash-Lite helper: " + used[-1])
 check(a.s["model_problem_choice"] == "backup", "the choice was remembered")
 check(a.s["model_cooloff"].get(a.s["model"], 0) > time.time(), "the busy model cools off for a while")
 asked.clear(); used.clear()
 a.start()
 pump(lambda: a.btn_start.kw.get("state") == "normal", timeout=15)
-check(not asked and used == [a.s["backup_model"]], "next run: no question, and no request to the cooling model")
+check(not asked and used == [lite, lite], "next run: no question, no request to the cooling model, and the "
+      "Flash-Lite helper's two requests: %r" % used)
 a.s["model_problem_choice"] = "ask"; a.v_problem.set(appmod.PROBLEM_CHOICES["ask"]); a.s["model_cooloff"] = {}
-core.generate = _gen
+core.generate, core.generate_json = _gen, _gj7
 a.v_skip.set(True)
 a.urls_box.buf = ""
 
