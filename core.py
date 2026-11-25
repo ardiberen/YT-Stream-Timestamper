@@ -70,6 +70,10 @@ class GeminiWait(Exception):
         self.kind, self.model = kind, model
 
 
+class _UseLiteHelper(Exception):
+    """Internal: the run switched to a Flash-Lite model mid-request; ask it with the Flash-Lite helper instead."""
+
+
 class GeminiCancel(StopRequested):
     """A model was busy or out of requests and the choice was to cancel the run."""
 
@@ -1191,10 +1195,16 @@ class Runner:
         self.status(f"Asking Gemini: {title[:60]}")
         sent = compact_lines(lines, self.cfg.merge_seconds)
         self.log(f"Sending {len(sent)} transcript lines ({len(lines)} captions) to {self._model} ...")
-        if self.cfg.form is not None and self.cfg.lite_helper and is_lite_model(self._model):
+        if self._helper_applies(self._model):
             text = self._ask_with_helper("\n".join(sent), duration)
         else:
-            text = self._ask_gemini("\n".join(sent))
+            try:
+                text = self._ask_gemini("\n".join(sent))
+            except _UseLiteHelper:
+                # the main model was busy and the app switched to a Flash-Lite model: on its own (one plain
+                # request) Flash-Lite often misses everything on a long stream, so use the helper for it too
+                self.log(f"{self._model} is a Flash-Lite model, so the app uses its Flash-Lite helper.")
+                text = self._ask_with_helper("\n".join(sent), duration)
         if text is None:
             self.log(f"{title[:60]}: nothing saved because the Gemini request failed (see above).", "error")
             return "failed"
@@ -1502,7 +1512,10 @@ class Runner:
             raise GeminiCancel()
         raise GeminiWait(kind, model)
 
-    def _request(self, call, label: str = "") -> Optional[str]:
+    def _helper_applies(self, model: str) -> bool:
+        return self.cfg.form is not None and self.cfg.lite_helper and is_lite_model(model)
+
+    def _request(self, call, label: str = "", divert=None) -> Optional[str]:
         """call(model) -> text. Retries the current model a few times; when it stays busy or is out of today's
         requests, follows _model_problem. Returns None if the request failed for another reason (logged).
 
@@ -1523,6 +1536,8 @@ class Runner:
                 continue
             if attempt >= self.cfg.max_retries:
                 return None
+            if divert is not None and divert(self._model):
+                raise _UseLiteHelper()  # before anything is sent to the new model
             attempt += 1
             self._check_stop()
             try:
@@ -1599,7 +1614,7 @@ class Runner:
         segs = parse_segments(first)
         if segs is None:
             self.log("The answer wasn't in the expected format; asking again the normal way ...", "warn")
-            return self._ask_gemini(transcript)
+            return self._ask_gemini(transcript, to_helper=False)
         if not is_lite_model(self._model):
             # switched to a stronger model while busy: it doesn't need the extra checking request
             self.log(f"  found {len(segs)} segment(s) (with {self._model}).")
@@ -1627,10 +1642,12 @@ class Runner:
             self.log(f"  after merging split calls and applying the minimum length: {len(tidy)}.")
         return pb.render_segments(c.form, tidy)
 
-    def _ask_gemini(self, transcript: str) -> Optional[str]:
-        """The answer text, or None if the request failed (the reason is already logged)."""
+    def _ask_gemini(self, transcript: str, to_helper: bool = True) -> Optional[str]:
+        """The answer text, or None if the request failed (the reason is already logged). to_helper: raise
+        _UseLiteHelper if the run switches to a Flash-Lite model first (off for the helper's own fallback)."""
         system = build_system_prompt(self.cfg.prompt, self.cfg.min_segment_minutes)
-        return self._request(lambda model: generate(self.cfg.api_key, model, system, transcript))
+        return self._request(lambda model: generate(self.cfg.api_key, model, system, transcript),
+                             divert=self._helper_applies if to_helper else None)
 
     # ---- main loop
     def run(self) -> dict:

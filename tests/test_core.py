@@ -1629,6 +1629,22 @@ class BusySwitchTests(LiteHelperRunTests):
         self.assertEqual([m for m, _, _ in sent], ["gemini-3.5-flash-lite"] * 3 + ["gemini-3.8-flash"])  # no 2nd pass
         self.assertTrue(any("asking it now" in m for _, m in self.logs))
 
+    def test_switch_to_lite_uses_the_helper(self):
+        def busy(key, model, system, transcript):
+            raise RuntimeError("503 UNAVAILABLE. The model is overloaded.")
+        core.generate = busy
+        first = json.dumps(LiteHelperTests.LITE)
+        r, sent = self.make_lite([first, first], problem_choice="backup", backup_model="gemini-3.5-flash-lite")
+        r.cfg.model = r._model = "gemini-3.8-flash"
+        r._sleep = lambda s: None
+        sm = r.run()
+        self.assertEqual(sm["done"], 1, self.logs)
+        # the busy model's plain tries, then Flash-Lite with the helper: data request + checking request
+        self.assertEqual([(m, d) for m, d, _ in sent], [("gemini-3.5-flash-lite", False),
+                                                       ("gemini-3.5-flash-lite", True)])
+        self.assertTrue(any("Flash-Lite helper" in m for _, m in self.logs), self.logs)
+        self.assertIn("Kaya", Path(sm["saved"][0]).read_text(encoding="utf-8"))
+
     def test_waiting_clock(self):
         import time as _t
         statuses = []
